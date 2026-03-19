@@ -56,7 +56,21 @@ pip install clang>=16.0.0
 ```
 -i, --input    Path to compile_commands.json
 -o, --output   Output file path
+-p, --path     Filter: 只分析指定路径下的文件（递归）
 -v, --verbose  Logging level (error, warning, info, debug)
+```
+
+## 路径过滤示例
+
+```bash
+# 只分析 src/ 目录下的文件
+./run.sh -p src/
+
+# 只分析某个具体路径
+./run.sh -p /path/to/project/specific/dir/
+
+# 组合使用
+./run.sh -p components/sensor/ -o sensor_calls.json -v info
 ```
 
 ## 文档

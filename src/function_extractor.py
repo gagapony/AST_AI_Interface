@@ -35,11 +35,24 @@ class FunctionExtractor:
     def __init__(self, tu: clang.cindex.TranslationUnit):
         """Initialize extractor with a translation unit."""
         self._tu = tu
-        self._doxygen_parser = DoxygenParser()
 
     def extract(self) -> List[FunctionInfo]:
         """Extract all function definitions from the AST."""
         functions = []
+
+        for cursor in self._tu.cursor.walk_preorder():
+            if self._is_function_definition(cursor):
+                try:
+                    info = self._extract_info(cursor)
+                    if info:
+                        functions.append(info)
+                except Exception as e:
+                    logging.warning(f"Failed to extract function info at {cursor.location}: {e}")
+                    import traceback
+                    logging.debug(traceback.format_exc())
+                    continue
+
+        return functions
 
         for cursor in self._tu.cursor.walk_preorder():
             if self._is_function_definition(cursor):
@@ -104,8 +117,8 @@ class FunctionExtractor:
         # Get qualified name
         qualified_name = self._get_qualified_name(cursor)
 
-        # Get brief
-        brief = self._doxygen_parser.extract_brief(cursor)
+        # Get brief (optional)
+        brief = self._get_brief(cursor)
 
         return FunctionInfo(
             path=path,
@@ -205,3 +218,22 @@ class FunctionExtractor:
         start = extent.start.line
         end = extent.end.line
         return (start, end)
+
+    def _get_brief(self, cursor: clang.cindex.Cursor) -> Optional[str]:
+        """
+        Extract Doxygen brief from cursor's raw comment.
+
+        Args:
+            cursor: libclang Cursor
+
+        Returns:
+            Brief text or None if not found
+        """
+        # Get raw comment
+        raw_comment = cursor.raw_comment
+        if not raw_comment:
+            return None
+
+        # Parse with DoxygenParser
+        parser = DoxygenParser()
+        return parser.parse(raw_comment)

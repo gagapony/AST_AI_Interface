@@ -1,33 +1,89 @@
-"""AST parsing using libclang."""
+"""AST parsing using libclang with adaptive flag filtering."""
 
 import logging
 from pathlib import Path
 from typing import List, Optional
 
-import clang.cindex
+try:
+    import clang.cindex
+except ImportError:
+    clang = None
+
+from flag_filter_manager import FlagFilterManager, ParseResult
 
 
 class ASTParser:
-    """Parse C/C++ source files using libclang."""
+    """Parse C/C++ source files using libclang with adaptive flag filtering."""
 
-    def __init__(self, clang_args: List[str]):
-        """Initialize parser with compilation flags."""
+    def __init__(self,
+                 clang_args: List[str],
+                 flag_filter_manager: Optional[FlagFilterManager] = None):
+        """
+        Initialize parser with compilation flags and optional filter manager.
+
+        Args:
+            clang_args: Original compiler flags (from compile_commands.json)
+            flag_filter_manager: Optional FlagFilterManager for adaptive parsing
+        """
         self._clang_args = clang_args
+        self._flag_filter_manager = flag_filter_manager
         self._diagnostics: List[str] = []
+        self._last_parse_result: Optional[ParseResult] = None
 
         # Create libclang index
         self._index = clang.cindex.Index.create()
 
     def parse_file(self, file_path: str) -> Optional[clang.cindex.TranslationUnit]:
-        """Parse a source file and return TranslationUnit."""
+        """
+        Parse a source file and return TranslationUnit.
+
+        Uses adaptive flag filtering if FlagFilterManager is configured.
+
+        Args:
+            file_path: Path to source file
+
+        Returns:
+            TranslationUnit if successful, None otherwise
+        """
         self._diagnostics = []
 
+        if self._flag_filter_manager:
+            # Use adaptive parsing with retry
+            result = self._flag_filter_manager.parse_file(
+                file_path,
+                self._clang_args,
+                self._index
+            )
+            self._last_parse_result = result
+
+            if result.success:
+                self._collect_diagnostics(result.translation_unit)
+                if result.degraded_mode:
+                    logging.warning(f"Parsed {file_path} in degraded mode "
+                                  f"(attempt {result.attempt.attempt_number})")
+                return result.translation_unit
+            else:
+                logging.error(f"Failed to parse {file_path} after all attempts")
+                return None
+        else:
+            # Original behavior: parse directly with flags
+            return self._parse_direct(file_path)
+
+    def _parse_direct(self, file_path: str) -> Optional[clang.cindex.TranslationUnit]:
+        """
+        Parse file directly without adaptive retry (original behavior).
+
+        Args:
+            file_path: Path to source file
+
+        Returns:
+            TranslationUnit if successful, None otherwise
+        """
         try:
-            # Parse options suitable for incomplete code (Arduino projects)
+            # Parse options
             parse_options = (
                 clang.cindex.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD |
-                clang.cindex.TranslationUnit.PARSE_INCOMPLETE |
-                clang.cindex.TranslationUnit.PARSE_SKIP_FUNCTION_BODIES
+                clang.cindex.TranslationUnit.PARSE_INCOMPLETE
             )
 
             # Parse file
@@ -43,8 +99,7 @@ class ASTParser:
                 return None
 
             # Collect diagnostics
-            for diag in tu.diagnostics:
-                self._diagnostics.append(self._format_diagnostic(diag))
+            self._collect_diagnostics(tu)
 
             # Check for fatal errors
             if any(diag.severity >= clang.cindex.Diagnostic.Error for diag in tu.diagnostics):
@@ -55,6 +110,11 @@ class ASTParser:
         except Exception as e:
             logging.error(f"Failed to parse {file_path}: {e}")
             return None
+
+    def _collect_diagnostics(self, tu: clang.cindex.TranslationUnit):
+        """Collect diagnostic messages from translation unit."""
+        for diag in tu.diagnostics:
+            self._diagnostics.append(self._format_diagnostic(diag))
 
     def _format_diagnostic(self, diag: clang.cindex.Diagnostic) -> str:
         """Format diagnostic message."""
@@ -81,3 +141,7 @@ class ASTParser:
     def has_errors(self) -> bool:
         """Check if parsing produced errors."""
         return "Error" in " ".join(self._diagnostics) or "Fatal" in " ".join(self._diagnostics)
+
+    def get_last_parse_result(self) -> Optional[ParseResult]:
+        """Get the last parse result (from adaptive parsing)."""
+        return self._last_parse_result

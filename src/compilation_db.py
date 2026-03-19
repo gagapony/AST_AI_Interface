@@ -2,6 +2,7 @@
 
 import json
 import logging
+import shlex
 from pathlib import Path
 from typing import List, NamedTuple
 
@@ -12,7 +13,6 @@ class CompilationUnit(NamedTuple):
     command: str
     file: str
     flags: List[str]
-    includes: List[str]
 
 
 class CompilationDatabase:
@@ -62,27 +62,60 @@ class CompilationDatabase:
             file_path = str(Path(directory) / raw_file_path)
 
         flags = self._extract_flags(command, directory)
-        includes = self._extract_includes(flags)
 
         return CompilationUnit(
             directory=directory,
             command=command,
             file=file_path,
-            flags=flags,
-            includes=includes
+            flags=flags
         )
 
     def _extract_flags(self, command: str, directory: str) -> List[str]:
-        """Extract clang-compatible flags from compile command."""
-        tokens = command.split()
+        """
+        Extract compiler flags from compile command.
+
+        Note: This method extracts all flags without filtering.
+        Filtering is handled by FlagFilterManager later.
+        """
+        # Use shlex.split to handle quoted arguments correctly
+        tokens = shlex.split(command)
         flags = []
 
-        # Skip compiler executable
-        for i, token in enumerate(tokens):
+        # Skip compiler executable and output files
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+
+            # Skip compiler executable
             if token.endswith('++') or token.endswith('gcc') or token.endswith('clang'):
+                i += 1
                 continue
 
-            # Include directories
+            # Skip output file option
+            if token == '-o':
+                if i + 1 < len(tokens):
+                    i += 2
+                    continue
+                else:
+                    i += 1
+                    continue
+
+            # Skip if it's an output file
+            if token.startswith('-o'):
+                i += 1
+                continue
+
+            # Skip source files
+            if token.endswith(('.c', '.cpp', '.cc', '.cxx', '.C', '.h', '.hpp', '.hh', '.hxx')):
+                i += 1
+                continue
+
+            # Skip object files and build artifacts
+            if token.endswith('.o') or '.pio/build/' in token:
+                i += 1
+                continue
+
+            # Include paths (handle both -Ipath and -I path formats)
             if token.startswith('-I'):
                 if token == '-I' and i + 1 < len(tokens):
                     # -I path format
@@ -90,85 +123,67 @@ class CompilationDatabase:
                     if not Path(path).is_absolute():
                         path = str(Path(directory) / path)
                     flags.extend(['-I', path])
+                    i += 2
                 elif len(token) > 2:
                     # -Ipath format
                     path = token[2:]
                     if not Path(path).is_absolute():
                         path = str(Path(directory) / path)
                     flags.append(f'-I{path}')
+                    i += 1
+                else:
+                    i += 1
+                continue
 
-            # System include directories (important for Arduino/ESP32 projects)
-            elif token.startswith('-isystem'):
+            # System include directories (handle both -isystempath and -isystem path formats)
+            if token.startswith('-isystem'):
                 if token == '-isystem' and i + 1 < len(tokens):
                     # -isystem path format
                     path = tokens[i + 1]
                     if not Path(path).is_absolute():
                         path = str(Path(directory) / path)
                     flags.extend(['-isystem', path])
+                    i += 2
                 elif len(token) > 9:
                     # -isystempath format
                     path = token[9:]
                     if not Path(path).is_absolute():
                         path = str(Path(directory) / path)
                     flags.append(f'-isystem{path}')
+                    i += 1
+                else:
+                    i += 1
+                continue
 
-            # Define macros
-            elif token.startswith('-D'):
+            # Define macros (handle both -DNAME and -D NAME formats)
+            if token.startswith('-D'):
                 if token == '-D' and i + 1 < len(tokens):
                     flags.extend(['-D', tokens[i + 1]])
+                    i += 2
                 elif len(token) > 2:
                     flags.append(token)
-
-            # Language standard
-            elif token.startswith('-std='):
-                flags.append(token)
-
-            # Warnings
-            elif token.startswith('-W'):
-                continue
-
-            # Optimization levels
-            elif token.startswith('-O'):
-                continue
-
-            # Debug info
-            elif token.startswith('-g'):
-                continue
-
-            # Source file
-            elif token.endswith(('.c', '.cpp', '.cc', '.cxx', '.C', '.h', '.hpp', '.hh', '.hxx')):
-                continue
-
-            # Output file
-            elif token.startswith('-o'):
-                if i + 1 < len(tokens):
-                    continue
+                    i += 1
                 else:
-                    continue
-
-            # Linker flags (skip)
-            elif token.startswith('-l') or token.startswith('-L'):
+                    i += 1
                 continue
 
-            # Other flags (pass through)
-            else:
-                flags.append(token)
+            # Undefine macros (handle both -UNAME and -U NAME formats)
+            if token.startswith('-U'):
+                if token == '-U' and i + 1 < len(tokens):
+                    flags.extend(['-U', tokens[i + 1]])
+                    i += 2
+                elif len(token) > 2:
+                    flags.append(token)
+                    i += 1
+                else:
+                    i += 1
+                continue
+
+            # Keep all other flags as-is (filtering will happen later)
+            flags.append(token)
+            i += 1
 
         return flags
-
-    def _extract_includes(self, flags: List[str]) -> List[str]:
-        """Extract include paths from flags (including -isystem)."""
-        includes = []
-        for flag in flags:
-            if flag.startswith('-I'):
-                if flag == '-I':
-                    continue
-                includes.append(flag[2:])
-            elif flag.startswith('-isystem'):
-                if flag == '-isystem':
-                    continue
-                includes.append(flag[9:])
-        return includes
 
     def get_units(self) -> List[CompilationUnit]:
         """Return all compilation units."""
