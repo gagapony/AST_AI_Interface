@@ -25,7 +25,6 @@ from .filter_config import FilterConfigLoader, FilterConfig, FilterMode
 from .compilation_db_filter import CompilationDatabaseFilter
 from .echarts_generator import EChartsGenerator, write_html_file
 from .file_graph_generator import FileGraphGenerator
-from .compile_commands_simplifier import CompileCommandsSimplifier
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,10 +49,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--format', '-F',
         type=str,
-        choices=['json', 'html'],
+        choices=['json', 'html', 'all'],
         default='json',
         help='Output format (default: json). '
-             'Options: json (JSON output), html (HTML from JSON). '
+             'Options: json (JSON output), html (HTML from JSON), all (JSON + HTML from JSON). '
              'HTML is always generated from JSON file.'
     )
     parser.add_argument(
@@ -93,16 +92,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        '--dump-simple-db',
-        type=str,
-        default=None,
-        metavar='FILE',
-        help='Dump simplified compile_commands.json to specified file. '
-             'Only applies when filtering is active (--filter-cfg or --path). '
-             'Simplified version contains only -D flags and -I flags matching filter paths.'
-    )
-
-    parser.add_argument(
         '--verbose', '-v',
         type=str,
         choices=['error', 'warning', 'info', 'debug'],
@@ -118,6 +107,15 @@ def parse_args() -> argparse.Namespace:
         '--version',
         action='version',
         version='clang-call-analyzer 1.0.0'
+    )
+    parser.add_argument(
+        '--aggressive-filter',
+        action='store_false',  # Default: True (enabled)
+        dest='no_aggressive_filter',
+        help='DISABLE aggressive filtering (enabled by default with --filter-cfg). '
+             'Aggressive filtering keeps: all -D flags, only -I flags matching filter.cfg, only files matching filter.cfg. '
+             'Removes: all other compiler flags. '
+             'This significantly speeds up parsing for large projects.'
     )
 
     return parser.parse_args()
@@ -242,37 +240,14 @@ def main() -> int:
         # Apply filter configuration
         units = comp_db.get_units()
 
-        # Simplify compile_commands when filtering is active
-        simple_db_stats = None
+        # Default: apply aggressive filter when --filter-cfg is used
+        if not args.no_aggressive_filter and filter_config.mode != FilterMode.AUTO_DETECT:
+            if filter_config.mode == FilterMode.AUTO_DETECT:
+                logging.error("Aggressive filter requires --filter-cfg to be specified")
+                return 1
+            logging.info("Applying aggressive filter mode (keeps -D and filter.cfg -I only)")
+            units = _apply_aggressive_filter(units, filter_config, logger)
 
-        if filter_config.mode != FilterMode.AUTO_DETECT:
-            logging.info("Creating simplified compile_commands.json for performance optimization")
-
-            # Initialize simplifier
-            simplifier = CompileCommandsSimplifier(
-                filter_paths=filter_config.normalized_paths,
-                logger=logger
-            )
-
-            # Simplify units
-            units, simple_db_stats = simplifier.simplify_units(units)
-
-            # Log summary
-            logging.info("=" * 60)
-            logging.info("SIMPLIFIED COMPILE COMMANDS SUMMARY")
-            logging.info("=" * 60)
-            logging.info(f"Original units: {simple_db_stats['original_units']}")
-            logging.info(f"Kept units: {simple_db_stats['kept_units']}")
-            logging.info(f"Removed units: {simple_db_stats['removed_units']}")
-            logging.info(f"Kept -D flags: {simple_db_stats['kept_D_flags']}")
-            logging.info(f"Kept -I flags: {simple_db_stats['kept_I_flags']}")
-            logging.info(f"Removed -I flags: {simple_db_stats['removed_I_flags']}")
-            logging.info(f"Removed other flags: {simple_db_stats['removed_other_flags']}")
-            logging.info("=" * 60)
-
-            # Dump to file if requested
-            if args.dump_simple_db:
-                simplifier.dump_to_file(units, args.dump_simple_db)
         elif filter_config.mode != FilterMode.AUTO_DETECT:
             # Convert CompilationUnit to dict format for filtering
             compile_commands = [
@@ -425,51 +400,61 @@ def main() -> int:
         output_paths = _determine_output_paths(args)
 
         # Generate outputs
-        json_path = None
-
-        # Step 1: Generate JSON first (for html format)
-        if args.format == 'html':
-            # Generate JSON file first (HTML will be generated from JSON)
-            json_path = Path(str(output_paths.get('json', '/tmp/call_graph_temp.json')))
-            logging.info(f"Generating JSON output to {json_path}")
-            emitter = JSONEmitter(str(json_path))
-            emitter.emit(functions_to_emit, relationships_to_emit)
-            logging.info(f"JSON generated at {json_path}")
-
-        # Step 2: Generate JSON output for json format
-        if args.format == 'json':
+        if args.format == 'json' or args.format == 'both':
+            # Generate JSON output
             logging.info(f"Generating JSON output to {output_paths['json']}")
             emitter = JSONEmitter(str(output_paths['json']))
             emitter.emit(functions_to_emit, relationships_to_emit)
-            logging.info(f"JSON output: {output_paths.get('json')}")
 
-        # Step 3: Generate HTML (always from JSON file)
-        if args.format == 'html':
-            logging.info("Generating ECharts HTML from JSON...")
-            if not json_path:
-                logging.error("JSON path not available for HTML generation")
-                return 1
-
-            # Load JSON to get the correct format
-            with open(json_path, 'r', encoding='utf-8') as f:
-                import json as json_lib
-                functions_dict = json_lib.load(f)
-
-            # Remove temporary JSON file if it was temporary
-            import os
-            if 'call_graph_temp.json' in str(json_path):
-                os.remove(json_path)
-                logging.info(f"Removed temporary JSON file: {json_path}")
-
-            # Generate HTML from JSON
-            echarts_gen = EChartsGenerator(
-                functions=functions_dict,
-                relationships=relationships_to_emit,
-                logger=logger
+        if args.format == 'mermaid' or args.format == 'both':
+            # Generate Mermaid diagram
+            logging.info("Generating Mermaid diagram...")
+            mermaid_gen = MermaidGenerator(
+                functions=functions_to_emit,
+                relationships=relationships_to_emit
             )
-            html_content = echarts_gen.generate_html()
-            write_html_file(html_content, str(output_paths['html']))
-            logging.info(f"HTML output: {output_paths.get('html')}")
+            mermaid_content = mermaid_gen.generate()
+            write_mermaid_file(mermaid_content, str(output_paths['mermaid']))
+
+        if args.format == 'html' or args.format == 'both':
+            # Generate ECharts HTML
+            if args.file_graph:
+                # File-level graph
+                logging.info("Generating file-level ECharts HTML...")
+                from .file_graph_generator import FileGraphGenerator
+                from .json_emitter import JSONEmitter
+
+                # First emit JSON to temp file to get proper format
+                import json as json_lib
+                import os
+                temp_json = '/tmp/call_analyzer_temp.json'
+                json_emitter = JSONEmitter(temp_json)
+                json_emitter.emit(functions_to_emit, relationships_to_emit)
+
+                # Load the JSON to get proper format
+                with open(temp_json, 'r', encoding='utf-8') as f:
+                    functions_dict = json_lib.load(f)
+
+                # Clean up temp file
+                os.remove(temp_json)
+
+                filegraph_gen = FileGraphGenerator(
+                    functions=functions_dict,
+                    relationships=relationships_to_emit,
+                    logger=logger
+                )
+                html_content = filegraph_gen.generate_html()
+                write_html_file(html_content, str(output_paths['html']))
+            else:
+                # Function-level graph (default)
+                logging.info("Generating function-level ECharts HTML...")
+                echarts_gen = EChartsGenerator(
+                    functions=functions_to_emit,
+                    relationships=relationships_to_emit,
+                    logger=logger
+                )
+                html_content = echarts_gen.generate_html()
+                write_html_file(html_content, str(output_paths['html']))
 
         # Print output files summary
         _print_output_summary(args.format, output_paths)
@@ -510,6 +495,10 @@ def _determine_output_paths(args: argparse.Namespace) -> Dict[str, Path]:
         paths['json'] = base_path if base_path.suffix == '.json' else base_path.with_suffix('.json')
     elif args.format == 'html':
         paths['html'] = base_path if base_path.suffix == '.html' else base_path.with_suffix('.html')
+    elif args.format == 'all':
+        # All format: generate JSON + HTML
+        paths['json'] = base_path if base_path.suffix == '.json' else base_path.with_suffix('.json')
+        paths['html'] = base_path.with_suffix('.html')
     else:
         # Default to JSON
         paths['json'] = base_path if base_path.suffix == '.json' else base_path.with_suffix('.json')
@@ -522,22 +511,216 @@ def _print_output_summary(format_type: str, output_paths: Dict[str, Path]) -> No
     Print summary of generated output files.
 
     Args:
-        format_type: Output format type (json, html)
+        format_type: Output format type
         output_paths: Dictionary of output paths
     """
     print("\n" + "=" * 50)
     print("Output Generation Complete")
     print("=" * 50)
 
-    if format_type == 'json':
+    if format_type == 'json' or format_type == 'both':
         if output_paths.get('json'):
             print(f"  JSON:  {output_paths['json']}")
 
-    if format_type == 'html':
+    if format_type == 'mermaid':
+        if output_paths.get('mermaid'):
+            print(f"  Mermaid:  {output_paths['mermaid']}")
+
+    if format_type == 'html' or format_type == 'both':
         if output_paths.get('html'):
             print(f"  HTML:  {output_paths['html']}")
 
     print("=" * 50 + "\n")
+
+
+def _is_allowed_path(path: str, filter_paths: list) -> bool:
+    """
+    Check if a path is allowed by filter configuration.
+
+    Args:
+        path: File or include path
+        filter_paths: List of filter paths from filter.cfg
+
+    Returns:
+        True if path matches any filter path
+    """
+    path = path.rstrip('/')
+    for filter_path in filter_paths:
+        if path == filter_path or path.startswith(filter_path + '/'):
+            return True
+    return False
+
+
+def _apply_aggressive_filter(units, filter_config: FilterConfig, logger) -> list:
+    """
+    Apply aggressive filtering to compilation units.
+
+    Keeps:
+    - All -D flags (macro definitions)
+    - Only -I flags matching filter.cfg paths
+    - Only files matching filter.cfg paths
+
+    Removes:
+    - All -I flags not matching filter.cfg
+    - All other compiler flags (-std, -O, -Wall, etc.)
+
+    Args:
+        units: List of CompilationUnit objects
+        filter_config: FilterConfig instance
+        logger: Logger instance
+
+    Returns:
+        List of filtered CompilationUnit objects
+    """
+    from .compilation_db import CompilationUnit
+
+    filter_paths = filter_config.normalized_paths
+
+    filtered_units = []
+    stats = {
+        'original_units': len(units),
+        'kept_units': 0,
+        'removed_units': 0,
+        'kept_D_flags': 0,
+        'kept_I_flags': 0,
+        'removed_I_flags': 0,
+        'removed_other_flags': 0
+    }
+
+    for unit in units:
+        # Check if file is in filter paths
+        if not _is_allowed_path(unit.file, filter_paths):
+            stats['removed_units'] += 1
+            logger.debug(f"Aggressive filter: Removed file {unit.file} (not in filter paths)")
+            continue
+
+        # Filter flags
+        tokens = unit.command.split()
+        filtered_tokens = []
+        i = 0
+
+        while i < len(tokens):
+            token = tokens[i]
+
+            # Keep all -D flags
+            if token == '-D' and i + 1 < len(tokens):
+                filtered_tokens.append('-D')
+                filtered_tokens.append(tokens[i + 1])
+                stats['kept_D_flags'] += 1
+                i += 2
+                continue
+            elif token.startswith('-D'):
+                filtered_tokens.append(token)
+                stats['kept_D_flags'] += 1
+                i += 1
+                continue
+
+            # Keep -I flags only if they match filter paths
+            if token == '-I' and i + 1 < len(tokens):
+                path = tokens[i + 1]
+                if _is_allowed_path(path, filter_paths):
+                    filtered_tokens.append('-I')
+                    filtered_tokens.append(path)
+                    stats['kept_I_flags'] += 1
+                else:
+                    stats['removed_I_flags'] += 1
+                i += 2
+                continue
+            elif token.startswith('-I'):
+                path = token[2:]
+                if _is_allowed_path(path, filter_paths):
+                    filtered_tokens.append(token)
+                    stats['kept_I_flags'] += 1
+                else:
+                    stats['removed_I_flags'] += 1
+                i += 1
+                continue
+
+            # Keep -isystem flags only if they match filter paths
+            if token == '-isystem' and i + 1 < len(tokens):
+                path = tokens[i + 1]
+                if _is_allowed_path(path, filter_paths):
+                    filtered_tokens.append('-isystem')
+                    filtered_tokens.append(path)
+                    stats['kept_I_flags'] += 1
+                else:
+                    stats['removed_I_flags'] += 1
+                i += 2
+                continue
+            elif token.startswith('-isystem'):
+                path = token[9:]
+                if _is_allowed_path(path, filter_paths):
+                    filtered_tokens.append(token)
+                    stats['kept_I_flags'] += 1
+                else:
+                    stats['removed_I_flags'] += 1
+                i += 1
+                continue
+
+            # Remove all other flags
+            stats['removed_other_flags'] += 1
+            i += 1
+
+        # Reconstruct command
+        filtered_command = ' '.join(filtered_tokens)
+
+        # Re-extract flags from filtered command
+        import shlex
+        filtered_flags = []
+
+        # Use same logic as CompilationDatabase._extract_flags
+        tokens = shlex.split(filtered_command)
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+
+            # Skip compiler executable
+            if token.endswith('++') or token.endswith('gcc') or token.endswith('clang'):
+                i += 1
+                continue
+
+            # Skip output file option
+            if token == '-o':
+                if i + 1 < len(tokens):
+                    i += 2
+                    continue
+                else:
+                    i += 1
+                    continue
+
+            # Collect flags (start with -)
+            if token.startswith('-') and not token.startswith('--'):
+                filtered_flags.append(token)
+                i += 1
+            else:
+                i += 1
+
+        # Create filtered unit
+        from .compilation_db import CompilationUnit
+        filtered_unit = CompilationUnit(
+            directory=unit.directory,
+            command=filtered_command,
+            file=unit.file,
+            flags=filtered_flags
+        )
+
+        filtered_units.append(filtered_unit)
+        stats['kept_units'] += 1
+
+    # Log summary
+    logger.info("=" * 60)
+    logger.info("AGGRESSIVE FILTER SUMMARY")
+    logger.info("=" * 60)
+    logger.info(f"Original units: {stats['original_units']}")
+    logger.info(f"Kept units: {stats['kept_units']}")
+    logger.info(f"Removed units: {stats['removed_units']}")
+    logger.info(f"Kept -D flags: {stats['kept_D_flags']}")
+    logger.info(f"Kept -I flags: {stats['kept_I_flags']}")
+    logger.info(f"Removed -I flags: {stats['removed_I_flags']}")
+    logger.info(f"Removed other flags: {stats['removed_other_flags']}")
+    logger.info("=" * 60)
+
+    return filtered_units
 
 
 if __name__ == '__main__':

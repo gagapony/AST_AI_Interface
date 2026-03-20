@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 from string import Template
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 
 from .function_extractor import FunctionInfo
 from .echarts_templates import CSS_TEMPLATE, HTML_TEMPLATE, APP_SCRIPT_TEMPLATE
@@ -14,14 +14,14 @@ class EChartsGenerator:
     """Generate HTML with ECharts visualization from function call relationships."""
 
     def __init__(self,
-                 functions: List[FunctionInfo],
+                 functions: Union[List[FunctionInfo], List[Dict]],
                  relationships: Dict[int, Tuple[List[int], List[int]]],
                  logger: Optional[logging.Logger] = None):
         """
         Initialize ECharts generator.
 
         Args:
-            functions: List of FunctionInfo objects
+            functions: List of FunctionInfo objects or list of dicts (from JSON)
             relationships: Dict mapping function index to (parents, children) tuples
             logger: Optional logger instance
         """
@@ -90,20 +90,45 @@ class EChartsGenerator:
         """
         Create ECharts node objects from function data.
 
+        Supports both FunctionInfo objects and dict (from JSON).
+
         Returns:
             List of node dictionaries
         """
         nodes = []
 
         for func in self.functions:
-            parents, children = self.relationships.get(func.index, ([], []))
+            # Handle both dict and FunctionInfo inputs
+            if isinstance(func, dict):
+                # From JSON: dict has 'index' and 'self' dict with fields
+                func_index = func.get('index')
+                self_dict = func.get('self', {})
+                func_name = self_dict.get('name', '')
+                func_path = self_dict.get('path', '')
+                func_line_range = self_dict.get('line', [])
+                func_brief = self_dict.get('brief', '')
+            else:
+                # FunctionInfo object
+                func_index = func.index
+                func_name = func.name
+                func_path = func.path
+                func_line_range = list(func.line_range)
+                func_brief = func.brief or ''
+
+            # Validate func_index before using
+            if func_index is None:
+                self.logger.warning(f"Function has no index: {func}")
+                continue
+
+            # Get relationships
+            parents, children = self.relationships.get(func_index, ([], []))
 
             node = {
-                'id': func.index,
-                'name': func.name,
-                'path': func.path,
-                'line_range': list(func.line_range),
-                'brief': func.brief or '',
+                'id': func_index,
+                'name': func_name,
+                'path': func_path,
+                'line_range': func_line_range,
+                'brief': func_brief,
                 'parents': parents,
                 'children': children,
                 'value': len(parents) + len(children)

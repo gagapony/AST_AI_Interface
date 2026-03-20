@@ -2,6 +2,20 @@
 
 ## NixOS / Nix
 
+**⚠️ Important:** This project requires libclang for AST parsing. On NixOS, you **must** use `nix-shell` to access the clang module.
+
+### Running Tests
+
+Tests must be run inside nix-shell to access the clang module:
+
+```bash
+nix-shell shell.nix --run 'pytest tests/'
+```
+
+If you encounter `ModuleNotFoundError: No module named 'clang'`, ensure you are running inside nix-shell.
+
+### Using `nix-shell`
+
 On NixOS or systems using Nix package manager, use a development shell:
 
 ### Using `nix-shell`

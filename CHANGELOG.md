@@ -6,6 +6,13 @@ All notable changes to clang-call-analyzer will be documented in this file.
 
 ### Added
 
+#### Code Quality Improvements
+- **Type safety:** Fixed type hints in `compile_commands_simplifier.py` to use `Optional[logging.Logger]`
+- **None handling:** Added validation in `echarts_generator.py` to prevent using `None` as dict key
+- **Documentation:** Added nix-shell requirement for running tests
+
+### Changed
+
 #### Filter Configuration System
 - **New CLI parameter:** `--filter-cfg` (-f) - Load filter configuration from INI file
 - **New CLI parameter:** `--dump-filtered-db` - Dump filtered compile_commands.json to specified file
@@ -26,6 +33,10 @@ All notable changes to clang-call-analyzer will be documented in this file.
 - Fixed import statements in `ast_parser.py`, `flag_filter_manager.py`, and `adaptive_flag_parser.py` to use relative imports
 - Fixed FilterMode references in `cli.py` to use imported enum instead of nested attribute
 - Fixed path normalization to respect project root for relative paths in filter.cfg
+- Fixed type hint in `compile_commands_simplifier.py` line 15 to properly declare optional logger parameter
+- Fixed None handling in `echarts_generator.py` to validate `func_index` before using as dict key
+- Removed obsolete `--no-aggressive-filter` check in `cli.py` (replaced by CompileCommandsSimplifier)
+- Removed temporary files `cli_new.py` and `cli_output_gen.py` from source tree
 
 ## [1.0.0] - 2024-03-19
 

@@ -100,13 +100,20 @@ See [USAGE.md](USAGE.md) for detailed usage instructions and common issues.
 
 ### Running Tests
 
-```bash
-# Run all tests
-python -m unittest discover tests/
+**⚠️ Important:** Tests require libclang and must be run in nix-shell environment:
 
-# Run specific test
-python -m unittest tests.test_compilation_db
+```bash
+# Run all tests in nix-shell
+nix-shell shell.nix --run 'python -m unittest discover tests/'
+
+# Run specific test in nix-shell
+nix-shell shell.nix --run 'python -m unittest tests.test_compilation_db'
+
+# Or use pytest if available
+nix-shell shell.nix --run 'pytest tests/'
 ```
+
+If you encounter `ModuleNotFoundError: No module named 'clang'`, ensure you are running tests inside nix-shell.
 
 ### Project Structure
 
