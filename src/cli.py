@@ -25,6 +25,7 @@ from .filter_config import FilterConfigLoader, FilterConfig, FilterMode
 from .compilation_db_filter import CompilationDatabaseFilter
 from .mermaid_generator import MermaidGenerator, write_mermaid_file
 from .echarts_generator import EChartsGenerator, write_html_file
+from .file_graph_generator import FileGraphGenerator
 
 
 def parse_args() -> argparse.Namespace:
@@ -127,6 +128,13 @@ def parse_args() -> argparse.Namespace:
         '--version',
         action='version',
         version='clang-call-analyzer 1.0.0'
+    )
+    parser.add_argument(
+        '--file-graph',
+        action='store_true',
+        help='Generate file-level call graph (file nodes with function call details). '
+             'Only works with --format html. '
+             'Edges show: function name @ sourceFile:line'
     )
 
     return parser.parse_args()
@@ -430,14 +438,43 @@ def main() -> int:
 
         if args.format == 'html' or args.format == 'both':
             # Generate ECharts HTML
-            logging.info("Generating ECharts HTML...")
-            echarts_gen = EChartsGenerator(
-                functions=functions_to_emit,
-                relationships=relationships_to_emit,
-                logger=logger
-            )
-            html_content = echarts_gen.generate_html()
-            write_html_file(html_content, str(output_paths['html']))
+            if args.file_graph:
+                # File-level graph
+                logging.info("Generating file-level ECharts HTML...")
+                from .file_graph_generator import FileGraphGenerator
+                from .json_emitter import JSONEmitter
+
+                # First emit JSON to temp file to get proper format
+                import json as json_lib
+                import os
+                temp_json = '/tmp/call_analyzer_temp.json'
+                json_emitter = JSONEmitter(temp_json)
+                json_emitter.emit(functions_to_emit, relationships_to_emit)
+
+                # Load the JSON to get proper format
+                with open(temp_json, 'r', encoding='utf-8') as f:
+                    functions_dict = json_lib.load(f)
+
+                # Clean up temp file
+                os.remove(temp_json)
+
+                filegraph_gen = FileGraphGenerator(
+                    functions=functions_dict,
+                    relationships=relationships_to_emit,
+                    logger=logger
+                )
+                html_content = filegraph_gen.generate_html()
+                write_html_file(html_content, str(output_paths['html']))
+            else:
+                # Function-level graph (default)
+                logging.info("Generating function-level ECharts HTML...")
+                echarts_gen = EChartsGenerator(
+                    functions=functions_to_emit,
+                    relationships=relationships_to_emit,
+                    logger=logger
+                )
+                html_content = echarts_gen.generate_html()
+                write_html_file(html_content, str(output_paths['html']))
 
         # Print output files summary
         _print_output_summary(args.format, output_paths)

@@ -1,6 +1,12 @@
-"""HTML/JavaScript templates for ECharts visualization."""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Function Call Graph</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+  <style>
 
-CSS_TEMPLATE = """
 * {
   margin: 0;
   padding: 0;
@@ -106,17 +112,7 @@ body.light-theme #controls {
   background: #ffffff;
   border-bottom: 1px solid #e0e0e0;
 }
-"""
 
-HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Function Call Graph</title>
-  <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
-  <style>
-$css
   </style>
 </head>
 <body>
@@ -146,14 +142,212 @@ $css
   </div>
   <div id="graph-container"></div>
   <script>
-    const GRAPH_DATA = $data;
-    $app_script
-  </script>
-</body>
-</html>
-"""
-
-APP_SCRIPT_TEMPLATE = """
+    const GRAPH_DATA = {
+  "nodes": [
+    {
+      "id": null,
+      "name": "helper",
+      "path": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_data/sample.cpp",
+      "line_range": [
+        12,
+        14
+      ],
+      "brief": "A simple helper function",
+      "parents": [],
+      "children": [],
+      "value": 0,
+      "category": "Default",
+      "symbolSize": 10
+    },
+    {
+      "id": null,
+      "name": "process",
+      "path": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_data/sample.cpp",
+      "line_range": [
+        21,
+        24
+      ],
+      "brief": "Main processing function",
+      "parents": [],
+      "children": [],
+      "value": 0,
+      "category": "Default",
+      "symbolSize": 10
+    },
+    {
+      "id": null,
+      "name": "add",
+      "path": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_data/sample.cpp",
+      "line_range": [
+        32,
+        34
+      ],
+      "brief": "Another helper function",
+      "parents": [],
+      "children": [],
+      "value": 0,
+      "category": "Default",
+      "symbolSize": 10
+    },
+    {
+      "id": null,
+      "name": "compute",
+      "path": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_data/sample.cpp",
+      "line_range": [
+        39,
+        43
+      ],
+      "brief": "Function that calls multiple others",
+      "parents": [],
+      "children": [],
+      "value": 0,
+      "category": "Default",
+      "symbolSize": 10
+    },
+    {
+      "id": null,
+      "name": "simple",
+      "path": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_data/sample.cpp",
+      "line_range": [
+        46,
+        48
+      ],
+      "brief": "Function without full doxygen style",
+      "parents": [],
+      "children": [],
+      "value": 0,
+      "category": "Default",
+      "symbolSize": 10
+    },
+    {
+      "id": null,
+      "name": "test",
+      "path": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_data/sample.cpp",
+      "line_range": [
+        53,
+        57
+      ],
+      "brief": "Test function",
+      "parents": [],
+      "children": [],
+      "value": 0,
+      "category": "Default",
+      "symbolSize": 10
+    },
+    {
+      "id": null,
+      "name": "main",
+      "path": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_data/sample.cpp",
+      "line_range": [
+        62,
+        65
+      ],
+      "brief": "Entry point",
+      "parents": [],
+      "children": [],
+      "value": 0,
+      "category": "Default",
+      "symbolSize": 10
+    }
+  ],
+  "edges": [
+    {
+      "source": 1,
+      "target": 0,
+      "lineStyle": {
+        "width": 1.1,
+        "color": "#999"
+      }
+    },
+    {
+      "source": 3,
+      "target": 1,
+      "lineStyle": {
+        "width": 1.3,
+        "color": "#999"
+      }
+    },
+    {
+      "source": 3,
+      "target": 2,
+      "lineStyle": {
+        "width": 1.3,
+        "color": "#999"
+      }
+    },
+    {
+      "source": 3,
+      "target": 0,
+      "lineStyle": {
+        "width": 1.3,
+        "color": "#999"
+      }
+    },
+    {
+      "source": 5,
+      "target": 3,
+      "lineStyle": {
+        "width": 1.2,
+        "color": "#999"
+      }
+    },
+    {
+      "source": 5,
+      "target": 4,
+      "lineStyle": {
+        "width": 1.2,
+        "color": "#999"
+      }
+    },
+    {
+      "source": 6,
+      "target": 5,
+      "lineStyle": {
+        "width": 1.1,
+        "color": "#999"
+      }
+    }
+  ],
+  "categories": [
+    {
+      "name": "Control",
+      "itemStyle": {
+        "color": "#ff7f0e"
+      }
+    },
+    {
+      "name": "Network",
+      "itemStyle": {
+        "color": "#2ca02c"
+      }
+    },
+    {
+      "name": "Data",
+      "itemStyle": {
+        "color": "#1f77b4"
+      }
+    },
+    {
+      "name": "Utility",
+      "itemStyle": {
+        "color": "#9467bd"
+      }
+    },
+    {
+      "name": "System",
+      "itemStyle": {
+        "color": "#d62728"
+      }
+    },
+    {
+      "name": "Default",
+      "itemStyle": {
+        "color": "#7f7f7f"
+      }
+    }
+  ]
+};
+    
 let chart;
 let originalNodes = [];
 let originalEdges = [];
@@ -818,4 +1012,7 @@ function setupEventListeners() {
     chart.resize();
   });
 }
-"""
+
+  </script>
+</body>
+</html>

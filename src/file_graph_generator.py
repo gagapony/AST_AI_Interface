@@ -84,7 +84,7 @@ function initGraph() {
     },
     series: [{
       type: 'graph',
-      layout: 'none',
+      layout: 'force',
       data: visibleNodes,
       links: visibleEdges,
       categories: GRAPH_DATA.categories,
@@ -99,6 +99,13 @@ function initGraph() {
         color: '#fff',
         fontSize: 12,
         fontWeight: 'bold'
+      },
+      force: {
+        repulsion: 500,
+        edgeLength: 100,
+        gravity: 0.1,
+        layoutAnimation: true,
+        preventOverlap: true
       },
       edgeLabel: {
         show: true,
@@ -122,11 +129,6 @@ function initGraph() {
   };
 
   chart.setOption(option);
-
-  // Auto-fit layout after render
-  setTimeout(() => {
-    autoLayout();
-  }, 100);
 }
 
 function tooltipFormatter(params) {
@@ -202,103 +204,6 @@ function updateChartData(nodes, edges) {
     series: [{
       data: nodes,
       links: edges
-    }]
-  });
-}
-
-function autoLayout() {
-  // Simple tree layout from left to right
-  const nodes = [...visibleNodes];
-  const edges = [...visibleEdges];
-
-  // Find root nodes (nodes with no incoming edges)
-  const hasIncoming = new Set();
-  edges.forEach(edge => {
-    hasIncoming.add(edge.target);
-  });
-
-  const rootNodes = nodes.filter(n => !hasIncoming.has(n.id));
-
-  // If no roots, use first node
-  const roots = rootNodes.length > 0 ? rootNodes : [nodes[0]];
-
-  // Assign levels using BFS
-  const levels = new Map();
-  const visited = new Set();
-  const queue = [];
-
-  roots.forEach(root => {
-    levels.set(root.id, 0);
-    visited.add(root.id);
-    queue.push(root.id);
-  });
-
-  while (queue.length > 0) {
-    const nodeId = queue.shift();
-    const level = levels.get(nodeId);
-
-    edges.forEach(edge => {
-      if (edge.source === nodeId && !visited.has(edge.target)) {
-        levels.set(edge.target, level + 1);
-        visited.add(edge.target);
-        queue.push(edge.target);
-      }
-    });
-  }
-
-  // Assign nodes to levels that haven't been visited
-  nodes.forEach(node => {
-    if (!visited.has(node.id)) {
-      levels.set(node.id, 0);
-    }
-  });
-
-  // Group nodes by level
-  const levelGroups = new Map();
-  levels.forEach((level, nodeId) => {
-    if (!levelGroups.has(level)) {
-      levelGroups.set(level, []);
-    }
-    levelGroups.get(level).push(nodeId);
-  });
-
-  // Calculate positions
-  const nodePositions = new Map();
-  const maxLevel = Math.max(...levels.values());
-  const nodeSize = 60;
-  const horizontalSpacing = 180;
-  const verticalSpacing = 120;
-
-  levelGroups.forEach((nodeIds, level) => {
-    const x = 100 + level * horizontalSpacing;
-    const count = nodeIds.length;
-    const totalHeight = (count - 1) * verticalSpacing;
-    const startY = Math.max(50, (600 - totalHeight) / 2);
-
-    nodeIds.forEach((nodeId, index) => {
-      nodePositions.set(nodeId, {
-        x: x,
-        y: startY + index * verticalSpacing
-      });
-    });
-  });
-
-  // Apply positions
-  const positionedNodes = nodes.map(node => {
-    const pos = nodePositions.get(node.id);
-    if (pos) {
-      return {
-        ...node,
-        x: pos.x,
-        y: pos.y
-      };
-    }
-    return node;
-  });
-
-  chart.setOption({
-    series: [{
-      data: positionedNodes
     }]
   });
 }
@@ -389,7 +294,7 @@ function setupEventListeners() {
   document.getElementById('export-png').addEventListener('click', handleExportPNG);
   document.getElementById('export-svg').addEventListener('click', handleExportSVG);
   document.getElementById('reset-view').addEventListener('click', () => {
-    autoLayout();
+    chart.dispatchAction({ type: 'restore' });
   });
 
   window.addEventListener('resize', () => {
