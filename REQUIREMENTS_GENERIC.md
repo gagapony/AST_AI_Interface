@@ -10,6 +10,14 @@
 
 ## Functional Requirements
 
+### G0: Path-Based Post-Processing Filter
+- **G0.1:** Parse all files (including system headers) to maintain AST correctness
+- **G0.2:** After parsing, filter functions by definition location
+- **G0.3:** Only emit functions whose `path` is within the `--path` scope
+- **G0.4:** Remap function indices after filtering (update parents/children)
+- **G0.5:** Filter relationships to only include edges between functions in the path scope
+- **G0.6:** Log the number of filtered functions (system/external)
+
 ### G1: Robust Flag Filtering
 - **G1.1:** Parse compilation command flags and pass them to libclang
 - **G1.2:** If libclang rejects a flag during parsing, detect and log it

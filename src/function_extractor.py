@@ -1,7 +1,9 @@
 """Function extraction from AST."""
 
 import logging
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import clang.cindex
@@ -18,6 +20,7 @@ class FunctionInfo:
     qualified_name: str
     brief: Optional[str]
     raw_cursor: clang.cindex.Cursor
+    index: Optional[int] = None  # ECharts requires index
 
 
 class FunctionExtractor:
@@ -32,17 +35,42 @@ class FunctionExtractor:
         clang.cindex.CursorKind.CONVERSION_FUNCTION,
     }
 
-    def __init__(self, tu: clang.cindex.TranslationUnit):
-        """Initialize extractor with a translation unit."""
+    def __init__(self, tu: clang.cindex.TranslationUnit,
+                 filter_paths: Optional[List[Path]] = None):
+        """
+        Initialize extractor with a translation unit.
+
+        Args:
+            tu: Translation unit from libclang
+            filter_paths: Optional list of filter paths to limit extraction scope
+                         Only functions in these paths will be extracted
+        """
         self._tu = tu
+        self._filter_paths = filter_paths
+        self._logger = logging.getLogger(__name__)
 
     def extract(self) -> List[FunctionInfo]:
-        """Extract all function definitions from the AST."""
+        """
+        Extract all function definitions from the AST.
+
+        If filter_paths is specified, only extracts functions from files
+        within the filter scope.
+        """
         functions = []
+        skipped_count = 0
 
         for cursor in self._tu.cursor.walk_preorder():
             if self._is_function_definition(cursor):
                 try:
+                    # Get file path
+                    file_path = str(cursor.location.file.name)
+
+                    # Check filter scope
+                    if not self._is_in_scope(file_path):
+                        skipped_count += 1
+                        self._logger.debug(f"Skipping function '{cursor.spelling}' at {file_path}: outside filter scope")
+                        continue
+
                     info = self._extract_info(cursor)
                     if info:
                         functions.append(info)
@@ -52,17 +80,12 @@ class FunctionExtractor:
                     logging.debug(traceback.format_exc())
                     continue
 
-        return functions
-
-        for cursor in self._tu.cursor.walk_preorder():
-            if self._is_function_definition(cursor):
-                try:
-                    info = self._extract_info(cursor)
-                    if info:
-                        functions.append(info)
-                except Exception as e:
-                    logging.warning(f"Failed to extract function info at {cursor.location}: {e}")
-                    continue
+        # Log extraction summary if filter is active
+        if self._filter_paths and skipped_count > 0:
+            self._logger.debug(
+                f"Extracted {len(functions)} functions, "
+                f"skipped {skipped_count} (outside filter scope)"
+            )
 
         return functions
 
@@ -94,6 +117,44 @@ class FunctionExtractor:
             return False
 
         return True
+
+    def _is_in_scope(self, file_path: str) -> bool:
+        """
+        Check if a file path is within the filter scope.
+
+        If no filter paths are specified, returns True (analyze everything).
+
+        Args:
+            file_path: Absolute or relative file path to check
+
+        Returns:
+            True if file is in filter scope, False otherwise
+        """
+        # If no filter paths specified, analyze everything
+        if not self._filter_paths:
+            return True
+
+        # Normalize file path
+        file_path = os.path.normpath(file_path)
+
+        # Check each filter path
+        for filter_path in self._filter_paths:
+            # Convert filter_path to string and normalize
+            norm_filter = os.path.normpath(str(filter_path))
+
+            # Ensure filter path ends with os.sep for directory matching
+            # This ensures 'src' matches 'src/file' but not 'src2/file'
+            filter_with_sep = norm_filter if norm_filter.endswith(os.sep) else norm_filter + os.sep
+
+            # Check if file_path is exactly the filter path (the filter path itself)
+            if file_path == norm_filter:
+                return True
+
+            # Check if file_path starts with filter_path (with separator)
+            if file_path.startswith(filter_with_sep):
+                return True
+
+        return False
 
     def _extract_info(self, cursor: clang.cindex.Cursor) -> Optional[FunctionInfo]:
         """

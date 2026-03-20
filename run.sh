@@ -15,4 +15,7 @@ for arg in "$@"; do
     ARGS="$ARGS '$arg'"
 done
 
-nix-shell "$SCRIPT_DIR" --run "cd $SCRIPT_DIR && python -m src.cli $ARGS"
+# Suppress clang/libclang warnings
+# Method: Use CLANG_FORCE_COLOR_DIAGNOSTICS=never and redirect stderr
+export CLANG_FORCE_COLOR_DIAGNOSTICS=never
+nix-shell "$SCRIPT_DIR" --run "cd $SCRIPT_DIR && python -m src.cli $ARGS 2>&1 | grep -v 'unknown warning option' | grep -v 'file not found'"

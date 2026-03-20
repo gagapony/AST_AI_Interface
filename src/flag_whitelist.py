@@ -77,8 +77,10 @@ class FlagWhitelist:
             name="compatibility",
             description="Compatibility mode flags",
             patterns=[
-                r'^-f(no-)?\S+',  # -fno-exceptions, etc. (libclang supports some)
-                r'^-m(no-)?\S+',  # -m32, -m64 (architecture)
+                # Language standard flags are in 'language_std' category
+                # Architecture flags are mostly blacklisted (-march=, -mtune=, etc.)
+                # Only keep basic compatibility flags libclang definitely supports
+                r'^-m(32|64)$',  # Target architecture (32-bit vs 64-bit)
             ]
         ),
     }
@@ -124,6 +126,20 @@ class FlagWhitelist:
         '-O', '-O0', '-O1', '-O2', '-O3', '-Os', '-Oz',  # Optimization
         '-flto',  # Link-time optimization
         '-fvisibility=',
+
+        # GCC-specific optimization flags
+        '-fstrict-volatile-bitfields',
+        '-fno-tree-switch-conversion',
+        '-freorder-blocks',
+        '-fno-jump-tables',
+        '-ffunction-sections',
+        '-fdata-sections',
+        '-fstack-protector',
+        '-fexceptions',
+        '-fno-rtti',
+
+        # Warning flags that cause issues with libclang
+        '-Werror=format=',  # Format string warnings - not needed for AST parsing
     }
 
     def __init__(self, custom_whitelist: Optional[Dict[str, List[str]]] = None):
@@ -185,12 +201,19 @@ class FlagWhitelist:
                         i += 1
                         self.logger.debug(f"  Skipped flag without arg: {flag}")
                         continue
+                else:
+                    # Skip blacklisted flag and its argument
+                    i += 2
+                    continue
             else:
+                # Single flag (no separate argument)
                 if self.is_whitelisted(flag):
                     filtered.append(flag)
                     self.logger.debug(f"  Kept flag: {flag}")
                 else:
-                    self.logger.debug(f"  Filtered out flag: {flag}")
+                    # Silently filter blacklisted warning flags
+                    if not flag.startswith('-Werror=format='):
+                        self.logger.debug(f"  Filtered out flag: {flag}")
                 i += 1
                 continue
 

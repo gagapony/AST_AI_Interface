@@ -1,0 +1,61 @@
+# ==============================================================================
+# Filter Configuration Example
+# ==============================================================================
+# This file specifies which directories should be analyzed by clang-call-analyzer.
+#
+# Usage:
+#   ./run.sh --filter-cfg filter.cfg
+#
+# Format:
+#   - One filter path per line
+#   - Lines starting with # are comments (ignored)
+#   - Empty lines are ignored
+#   - Both relative and absolute paths are supported
+#   - Trailing slashes are optional (src/ == src)
+#
+# Path Resolution:
+#   - Relative paths are resolved relative to compile_commands.json directory
+#   - Absolute paths are used as-is
+#
+# ==============================================================================
+
+# ============================================================================
+# Main Application Source Code
+# ============================================================================
+
+# Main source directory
+src/
+
+# Include headers
+include/
+
+# Library directories
+lib/
+components/
+
+# ============================================================================
+# Optional: Absolute Paths
+# ==============================================================================
+
+# You can also use absolute paths if needed:
+# /home/user/project/vendor/mylib/
+# /opt/external/library/
+
+# ============================================================================
+# Optional: Test Files
+# ============================================================================
+
+# Include test directory if you want to analyze test code
+# tests/
+# test/
+
+# ============================================================================
+# Tips
+# ==============================================================================
+#
+# 1. Start with minimal paths (just src/) and add more as needed
+# 2. Use --dump-filtered-db to check what files will be analyzed
+# 3. Relative paths are recommended for portability
+# 4. Comments help document why certain paths are included
+#
+# ============================================================================

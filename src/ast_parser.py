@@ -9,7 +9,7 @@ try:
 except ImportError:
     clang = None
 
-from flag_filter_manager import FlagFilterManager, ParseResult
+from .flag_filter_manager import FlagFilterManager, ParseResult
 
 
 class ASTParser:

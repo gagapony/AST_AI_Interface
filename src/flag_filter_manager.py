@@ -4,8 +4,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
-from flag_whitelist import FlagWhitelist
-from adaptive_flag_parser import AdaptiveFlagParser, ParseResult
+from .flag_whitelist import FlagWhitelist
+from .adaptive_flag_parser import AdaptiveFlagParser, ParseResult
 
 
 @dataclass

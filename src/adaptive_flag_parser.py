@@ -10,7 +10,7 @@ try:
 except ImportError:
     clang = None
 
-from flag_whitelist import FlagWhitelist
+from .flag_whitelist import FlagWhitelist
 
 
 @dataclass
