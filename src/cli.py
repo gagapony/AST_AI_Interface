@@ -136,6 +136,15 @@ def parse_args() -> argparse.Namespace:
              'Only works with --format html. '
              'Edges show: function name @ sourceFile:line'
     )
+    parser.add_argument(
+        '--aggressive-filter',
+        action='store_true',
+        help='Apply aggressive filtering to compilation database (fast mode). '
+             'Keeps: all -D flags, only -I flags matching filter.cfg, only files matching filter.cfg. '
+             'Removes: all other compiler flags. '
+             'This significantly speeds up parsing for large projects. '
+             'Requires --filter-cfg to be specified.'
+    )
 
     return parser.parse_args()
 
@@ -268,7 +277,14 @@ def main() -> int:
         # Apply filter configuration
         units = comp_db.get_units()
 
-        if filter_config.mode != FilterMode.AUTO_DETECT:
+        if args.aggressive_filter:
+            logging.info("Applying aggressive filter mode (keeps -D and filter.cfg -I only)")
+            if filter_config.mode == FilterMode.AUTO_DETECT:
+                logging.error("--aggressive-filter requires --filter-cfg to be specified")
+                return 1
+            units = _apply_aggressive_filter(units, filter_config, logger)
+
+        elif filter_config.mode != FilterMode.AUTO_DETECT:
             # Convert CompilationUnit to dict format for filtering
             compile_commands = [
                 {
@@ -562,6 +578,196 @@ def _print_output_summary(format_type: str, output_paths: Dict[str, Path]) -> No
             print(f"  HTML:  {output_paths['html']}")
 
     print("=" * 50 + "\n")
+
+
+def _is_allowed_path(path: str, filter_paths: list) -> bool:
+    """
+    Check if a path is allowed by filter configuration.
+
+    Args:
+        path: File or include path
+        filter_paths: List of filter paths from filter.cfg
+
+    Returns:
+        True if path matches any filter path
+    """
+    path = path.rstrip('/')
+    for filter_path in filter_paths:
+        if path == filter_path or path.startswith(filter_path + '/'):
+            return True
+    return False
+
+
+def _apply_aggressive_filter(units, filter_config: FilterConfig, logger) -> list:
+    """
+    Apply aggressive filtering to compilation units.
+
+    Keeps:
+    - All -D flags (macro definitions)
+    - Only -I flags matching filter.cfg paths
+    - Only files matching filter.cfg paths
+
+    Removes:
+    - All -I flags not matching filter.cfg
+    - All other compiler flags (-std, -O, -Wall, etc.)
+
+    Args:
+        units: List of CompilationUnit objects
+        filter_config: FilterConfig instance
+        logger: Logger instance
+
+    Returns:
+        List of filtered CompilationUnit objects
+    """
+    from .compilation_db import CompilationUnit
+
+    filter_paths = filter_config.normalized_paths
+
+    filtered_units = []
+    stats = {
+        'original_units': len(units),
+        'kept_units': 0,
+        'removed_units': 0,
+        'kept_D_flags': 0,
+        'kept_I_flags': 0,
+        'removed_I_flags': 0,
+        'removed_other_flags': 0
+    }
+
+    for unit in units:
+        # Check if file is in filter paths
+        if not _is_allowed_path(unit.file, filter_paths):
+            stats['removed_units'] += 1
+            logger.debug(f"Aggressive filter: Removed file {unit.file} (not in filter paths)")
+            continue
+
+        # Filter flags
+        tokens = unit.command.split()
+        filtered_tokens = []
+        i = 0
+
+        while i < len(tokens):
+            token = tokens[i]
+
+            # Keep all -D flags
+            if token == '-D' and i + 1 < len(tokens):
+                filtered_tokens.append('-D')
+                filtered_tokens.append(tokens[i + 1])
+                stats['kept_D_flags'] += 1
+                i += 2
+                continue
+            elif token.startswith('-D'):
+                filtered_tokens.append(token)
+                stats['kept_D_flags'] += 1
+                i += 1
+                continue
+
+            # Keep -I flags only if they match filter paths
+            if token == '-I' and i + 1 < len(tokens):
+                path = tokens[i + 1]
+                if _is_allowed_path(path, filter_paths):
+                    filtered_tokens.append('-I')
+                    filtered_tokens.append(path)
+                    stats['kept_I_flags'] += 1
+                else:
+                    stats['removed_I_flags'] += 1
+                i += 2
+                continue
+            elif token.startswith('-I'):
+                path = token[2:]
+                if _is_allowed_path(path, filter_paths):
+                    filtered_tokens.append(token)
+                    stats['kept_I_flags'] += 1
+                else:
+                    stats['removed_I_flags'] += 1
+                i += 1
+                continue
+
+            # Keep -isystem flags only if they match filter paths
+            if token == '-isystem' and i + 1 < len(tokens):
+                path = tokens[i + 1]
+                if _is_allowed_path(path, filter_paths):
+                    filtered_tokens.append('-isystem')
+                    filtered_tokens.append(path)
+                    stats['kept_I_flags'] += 1
+                else:
+                    stats['removed_I_flags'] += 1
+                i += 2
+                continue
+            elif token.startswith('-isystem'):
+                path = token[9:]
+                if _is_allowed_path(path, filter_paths):
+                    filtered_tokens.append(token)
+                    stats['kept_I_flags'] += 1
+                else:
+                    stats['removed_I_flags'] += 1
+                i += 1
+                continue
+
+            # Remove all other flags
+            stats['removed_other_flags'] += 1
+            i += 1
+
+        # Reconstruct command
+        filtered_command = ' '.join(filtered_tokens)
+
+        # Re-extract flags from filtered command
+        import shlex
+        filtered_flags = []
+
+        # Use same logic as CompilationDatabase._extract_flags
+        tokens = shlex.split(filtered_command)
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+
+            # Skip compiler executable
+            if token.endswith('++') or token.endswith('gcc') or token.endswith('clang'):
+                i += 1
+                continue
+
+            # Skip output file option
+            if token == '-o':
+                if i + 1 < len(tokens):
+                    i += 2
+                    continue
+                else:
+                    i += 1
+                    continue
+
+            # Collect flags (start with -)
+            if token.startswith('-') and not token.startswith('--'):
+                filtered_flags.append(token)
+                i += 1
+            else:
+                i += 1
+
+        # Create filtered unit
+        from .compilation_db import CompilationUnit
+        filtered_unit = CompilationUnit(
+            directory=unit.directory,
+            command=filtered_command,
+            file=unit.file,
+            flags=filtered_flags
+        )
+
+        filtered_units.append(filtered_unit)
+        stats['kept_units'] += 1
+
+    # Log summary
+    logger.info("=" * 60)
+    logger.info("AGGRESSIVE FILTER SUMMARY")
+    logger.info("=" * 60)
+    logger.info(f"Original units: {stats['original_units']}")
+    logger.info(f"Kept units: {stats['kept_units']}")
+    logger.info(f"Removed units: {stats['removed_units']}")
+    logger.info(f"Kept -D flags: {stats['kept_D_flags']}")
+    logger.info(f"Kept -I flags: {stats['kept_I_flags']}")
+    logger.info(f"Removed -I flags: {stats['removed_I_flags']}")
+    logger.info(f"Removed other flags: {stats['removed_other_flags']}")
+    logger.info("=" * 60)
+
+    return filtered_units
 
 
 if __name__ == '__main__':
