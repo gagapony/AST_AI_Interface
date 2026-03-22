@@ -3,11 +3,10 @@
 pkgs.mkShell {
   buildInputs = with pkgs; [
     python3
-    python3Packages.libclang
     python3Packages.setuptools
     python3Packages.pip
-    llvmPackages.clang
-    llvmPackages.bintools
+    python3Packages.libclang
+    clang
   ];
 
   shellHook = ''

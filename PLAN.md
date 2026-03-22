@@ -1,889 +1,479 @@
-# clang-call-analyzer - Implementation Plan
+# clang-call-analyzer - Refactoring Plan
 
 ## Overview
 
-This plan addresses three main issues:
-1. **Bug:** AttributeError in `echarts_generator.py` when generating HTML from JSON
-2. **Feature:** Add preprocessing step to create `compile_commands_simple.json`
-3. **Cleanup:** Remove deprecated `--format all` option
+This plan simplifies clang-call-analyzer by removing YAML config and path filtering, but keeps file simplification and flexible file selection.
 
 ---
 
-## Phase 1: Fix EChartsGenerator Bug
+## User Requirements
 
-### 1.1 Problem Analysis
-
-**Current Code (`src/echarts_generator.py`):**
-```python
-def __init__(self,
-             functions: List[FunctionInfo],
-             relationships: Dict[int, Tuple[List[int], List[int]]],
-             logger: Optional[logging.Logger] = None):
-    self.functions = functions  # Expects List[FunctionInfo]
-    self.relationships = relationships
-
-def _create_nodes(self) -> List[Dict]:
-    nodes = []
-    for func in self.functions:
-        parents, children = self.relationships.get(func.index, ([], []))  # FAILS HERE
+### 1. Keep Workflow
+```
+compile_commands.json -> compile_commands_simple.json -> output.json -> output.html
 ```
 
-**Issue:** When generating HTML, CLI passes a list of dicts (from JSON):
-```python
-with open(json_path, 'r', encoding='utf-8') as f:
-    functions_dict = json_lib.load(f)  # This is a list of dicts
+### 2. Preserve Essential Options
 
-echarts_gen = EChartsGenerator(
-    functions=functions_dict,  # List[Dict], not List[FunctionInfo]
-    relationships=relationships_to_emit,
-    logger=logger
+**Keep these CLI options:**
+- `--input, -i INPUT` - Path to compile_commands.json
+- `--output, -o OUTPUT` - Output file path
+- `--format, -F {json,html}` - Output format
+- `--verbose, -v LEVEL` - Logging level
+- `--version` - Show program version
+- `--dump-simple-db FILE` - Dump simplified compile_commands.json (for debugging/optimization)
+- `--filter-cfg, -f FILE` - Filter.cfg file (INI format) - specify files/paths to analyze
+
+### 3. Remove YAML Config and Path Filtering
+
+**Remove these CLI options and ALL associated code:**
+- `--config, -c CONFIG` - YAML configuration file
+- `--path, -p PATH` - Filter path to analyze single directory
+
+**Note:** `--filter-cfg` is kept (not removed) for flexible file/selection.
+
+### 4. HTML Generation
+- HTML's ONLY input is JSON file
+- Use FileGraphGenerator for file-level visualization
+- No direct code-to-HTML path
+
+### 5. HTML Visualization
+- Each node = FILE
+- Lines between nodes = function call relationships
+- On lines, display: `"func @ file(start_line-end_line)"`
+
+### 6. Output Behavior
+- When `--format html` is specified, output BOTH `output.json` AND `output.html`
+
+---
+
+## Architecture
+
+### File Simplification (compile_commands_simple.json)
+
+The tool automatically generates a simplified version of compile_commands.json:
+
+**Kept flags:**
+- All `-D` macro definitions
+- Only `-I` include paths (no filtering, keeps all)
+- All source files
+
+**Removed flags:**
+- All other compiler flags (`-std`, `-O`, `-Wall`, etc.)
+- System library `-I` paths (if detected)
+
+This improves parsing performance without filtering.
+
+---
+
+## Files to DELETE
+
+### YAML Config and Path Filtering Files
+```
+src/filter_config.py
+src/compilation_db_filter.py
+src/adaptive_flag_parser.py
+src/flag_filter_manager.py
+src/flag_whitelist.py
+```
+
+### Filter-Related Test Files
+```
+tests/test_filter_config.py
+tests/test_filter/  # Entire directory
+```
+
+---
+
+## Files to MODIFY
+
+### src/cli.py
+
+**Remove imports:**
+```python
+# Remove these imports:
+from .filter_config import FilterConfigLoader, FilterConfig, FilterMode
+from .compilation_db_filter import CompilationDatabaseFilter
+from .flag_filter_manager import FlagFilterManager
+from .adaptive_flag_parser import AdaptiveFlagParser
+
+# Remove YAML import
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+```
+
+**Remove CLI arguments:**
+```python
+# Remove --config argument
+parser.add_argument('--config', '-c', ...)
+
+# Remove --path argument
+parser.add_argument('--path', '-p', ...)
+
+# Remove --dump-filtered-db argument
+parser.add_argument('--dump-filtered-db', ...)
+
+# Remove --disable-retry argument
+parser.add_argument('--disable-retry', ...)
+```
+
+**Remove functions:**
+```python
+# Remove:
+def load_config(config_path: Optional[str]) -> dict
+
+# Remove (if exists):
+def _apply_aggressive_filter(...)
+```
+
+**Add/Update CLI arguments:**
+```python
+# Keep/update --filter-cfg for flexible file selection
+filter_group = parser.add_mutually_exclusive_group()
+filter_group.add_argument(
+    '--filter-cfg', '-f',
+    type=str,
+    default=None,
+    metavar='FILE',
+    help='Filter.cfg file (INI format). '
+         'If specified, only files/paths in this file are analyzed. '
+         'Supports multiple paths (one per line).'
 )
-```
 
-**Error:** `AttributeError: 'dict' object has no attribute 'index'`
-
-### 1.2 Solution Design
-
-**Option A: Convert dicts to FunctionInfo objects (REJECTED)**
-- Creates unnecessary objects
-- Loses performance benefit of using JSON directly
-- More complex code
-
-**Option B: Make EChartsGenerator work with both types (ACCEPTED)**
-- Check input type at runtime
-- Handle both dict and FunctionInfo inputs
-- Minimal code changes
-- Maintains compatibility
-
-### 1.3 Implementation Steps
-
-**Step 1.1:** Update `_create_nodes()` to handle both dict and FunctionInfo
-
-```python
-def _create_nodes(self) -> List[Dict]:
-    """
-    Create ECharts node objects from function data.
-
-    Supports both FunctionInfo objects and dict (from JSON).
-    """
-    nodes = []
-
-    for func in self.functions:
-        # Handle both dict and FunctionInfo inputs
-        if isinstance(func, dict):
-            # From JSON: dict has 'self' dict with fields
-            func_index = func.get('index')
-            self_dict = func.get('self', {})
-            func_name = self_dict.get('name', '')
-            func_path = self_dict.get('path', '')
-            func_line_range = self_dict.get('line', [])
-            func_brief = self_dict.get('brief', '')
-        else:
-            # FunctionInfo object
-            func_index = func.index
-            func_name = func.name
-            func_path = func.path
-            func_line_range = list(func.line_range)
-            func_brief = func.brief or ''
-
-        # Get relationships
-        parents, children = self.relationships.get(func_index, ([], []))
-
-        node = {
-            'id': func_index,
-            'name': func_name,
-            'path': func_path,
-            'line_range': func_line_range,
-            'brief': func_brief,
-            'parents': parents,
-            'children': children,
-            'value': len(parents) + len(children)
-        }
-
-        nodes.append(node)
-
-    return nodes
-```
-
-**Step 1.2:** Update type hints to reflect dual support
-
-```python
-from typing import List, Dict, Tuple, Optional, Union
-
-def __init__(self,
-             functions: Union[List[FunctionInfo], List[Dict]],
-             relationships: Dict[int, Tuple[List[int], List[int]]],
-             logger: Optional[logging.Logger] = None):
-    """
-    Initialize ECharts generator.
-
-    Args:
-        functions: List of FunctionInfo objects or list of dicts (from JSON)
-        relationships: Dict mapping function index to (parents, children) tuples
-        logger: Optional logger instance
-    """
-    self.functions = functions
-    self.relationships = relationships
-    self.logger = logger or logging.getLogger(__name__)
-```
-
-**Step 1.3:** Update docstrings to document dual support
-
-### 1.4 Testing Strategy
-
-**Test 1.1:** Generate HTML from FunctionInfo objects
-- Create test with FunctionInfo list
-- Verify HTML generation works
-
-**Test 1.2:** Generate HTML from dict list (from JSON)
-- Load test JSON file
-- Pass dict list to EChartsGenerator
-- Verify HTML generation works
-
-**Test 1.3:** Integration test
-- Run full CLI workflow with `--format html`
-- Verify no AttributeError
-
----
-
-## Phase 2: Add compile_commands_simple.json Preprocessing
-
-### 2.1 Problem Analysis
-
-**Current State:**
-- Standalone script `dump_simple_db.py` exists but is not integrated
-- Main CLI does not create simplified compile_commands
-- Simplified DB is only created manually when needed
-
-**Requirements:**
-- Create simplified `compile_commands_simple.json` as preprocessing step
-- Simplified DB filters out unnecessary flags
-- Add `--dump-simple-db` flag to optionally export
-- Automatically use simplified DB when filtering is active
-
-### 2.2 Solution Design
-
-**Approach:** Integrate simplified DB generation into main CLI flow
-
-**Flow:**
-1. When filtering is active (--filter-cfg or --path), create simplified DB
-2. If --dump-simple-db is specified, write to file
-3. Use simplified DB for parsing (if created)
-
-### 2.3 Implementation Steps
-
-**Step 2.1:** Create new module `src/compile_commands_simplifier.py`
-
-```python
-"""Compile commands simplifier for performance optimization."""
-
-import json
-import logging
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
-from .compilation_db import CompilationUnit
-
-
-class CompileCommandsSimplifier:
-    """Simplify compile_commands.json by filtering flags."""
-
-    def __init__(self, filter_paths: List[str], logger: Optional[logging.Logger] = None):
-        """
-        Initialize simplifier.
-
-        Args:
-            filter_paths: List of normalized filter paths
-            logger: Optional logger instance
-        """
-        self.filter_paths = [p.rstrip('/') for p in filter_paths]
-        self.logger = logger or logging.getLogger(__name__)
-
-    def simplify_units(self, units: List[CompilationUnit]) -> Tuple[List[CompilationUnit], Dict]:
-        """
-        Simplify compilation units by filtering flags.
-
-        Keeps:
-        - All -D flags (macro definitions)
-        - Only -I flags matching filter paths
-        - Only files matching filter paths
-
-        Removes:
-        - All -I flags not matching filter paths
-        - All other compiler flags (-std, -O, -Wall, etc.)
-
-        Args:
-            units: List of CompilationUnit objects
-
-        Returns:
-            Tuple of (simplified_units, stats_dict)
-        """
-        stats = {
-            'original_units': len(units),
-            'kept_units': 0,
-            'removed_units': 0,
-            'kept_D_flags': 0,
-            'kept_I_flags': 0,
-            'removed_I_flags': 0,
-            'removed_other_flags': 0
-        }
-
-        simplified_units = []
-
-        for unit in units:
-            # Check if file is in filter paths
-            if not self._is_allowed_path(unit.file):
-                stats['removed_units'] += 1
-                self.logger.debug(f"Simplifier: Removed file {unit.file}")
-                continue
-
-            # Filter flags
-            filtered_flags, unit_stats = self._filter_flags(unit.flags)
-            stats['kept_units'] += 1
-
-            # Accumulate stats
-            for key in ['kept_D_flags', 'kept_I_flags', 'removed_I_flags', 'removed_other_flags']:
-                stats[key] += unit_stats[key]
-
-            # Reconstruct command
-            filtered_command = self._reconstruct_command(unit.command, filtered_flags)
-
-            # Create simplified unit
-            simplified_unit = CompilationUnit(
-                directory=unit.directory,
-                command=filtered_command,
-                file=unit.file,
-                flags=filtered_flags
-            )
-
-            simplified_units.append(simplified_unit)
-
-        return simplified_units, stats
-
-    def _is_allowed_path(self, path: str) -> bool:
-        """Check if path matches any filter path."""
-        path = path.rstrip('/')
-        for filter_path in self.filter_paths:
-            if path == filter_path or path.startswith(filter_path + '/'):
-                return True
-        return False
-
-    def _filter_flags(self, flags: List[str]) -> Tuple[List[str], Dict]:
-        """Filter flags, keeping only -D and matching -I."""
-        stats = {
-            'kept_D_flags': 0,
-            'kept_I_flags': 0,
-            'removed_I_flags': 0,
-            'removed_other_flags': 0
-        }
-
-        filtered_flags = []
-        i = 0
-
-        while i < len(flags):
-            flag = flags[i]
-
-            # Keep all -D flags
-            if flag == '-D' and i + 1 < len(flags):
-                filtered_flags.extend(['-D', flags[i + 1]])
-                stats['kept_D_flags'] += 1
-                i += 2
-                continue
-            elif flag.startswith('-D'):
-                filtered_flags.append(flag)
-                stats['kept_D_flags'] += 1
-                i += 1
-                continue
-
-            # Keep -I flags only if they match filter paths
-            if flag == '-I' and i + 1 < len(flags):
-                path = flags[i + 1]
-                if self._is_allowed_path(path):
-                    filtered_flags.extend(['-I', path])
-                    stats['kept_I_flags'] += 1
-                else:
-                    stats['removed_I_flags'] += 1
-                i += 2
-                continue
-            elif flag.startswith('-I'):
-                path = flag[2:]
-                if self._is_allowed_path(path):
-                    filtered_flags.append(flag)
-                    stats['kept_I_flags'] += 1
-                else:
-                    stats['removed_I_flags'] += 1
-                i += 1
-                continue
-
-            # Keep -isystem flags only if they match filter paths
-            if flag == '-isystem' and i + 1 < len(flags):
-                path = flags[i + 1]
-                if self._is_allowed_path(path):
-                    filtered_flags.extend(['-isystem', path])
-                    stats['kept_I_flags'] += 1
-                else:
-                    stats['removed_I_flags'] += 1
-                i += 2
-                continue
-            elif flag.startswith('-isystem'):
-                path = flag[9:]
-                if self._is_allowed_path(path):
-                    filtered_flags.append(flag)
-                    stats['kept_I_flags'] += 1
-                else:
-                    stats['removed_I_flags'] += 1
-                i += 1
-                continue
-
-            # Remove all other flags
-            stats['removed_other_flags'] += 1
-            i += 1
-
-        return filtered_flags, stats
-
-    def _reconstruct_command(self, original_command: str, filtered_flags: List[str]) -> str:
-        """Reconstruct command with filtered flags."""
-        # Parse original command to get compiler executable
-        import shlex
-        tokens = shlex.split(original_command)
-
-        if not tokens:
-            return original_command
-
-        # Keep first token (compiler)
-        compiler = tokens[0]
-
-        # Reconstruct command: compiler + filtered_flags + source file
-        # Note: This is a simplified reconstruction
-        parts = [compiler] + filtered_flags
-
-        # Add source file if present in original
-        for token in tokens:
-            if token.endswith(('.c', '.cpp', '.cc', '.cxx', '.C')):
-                parts.append(token)
-                break
-
-        return ' '.join(parts)
-
-    def dump_to_file(self, units: List[CompilationUnit], output_path: str) -> None:
-        """
-        Dump simplified compilation units to JSON file.
-
-        Args:
-            units: List of CompilationUnit objects
-            output_path: Path to output JSON file
-        """
-        # Convert to dict format
-        output_data = [
-            {
-                'directory': unit.directory,
-                'command': unit.command,
-                'file': unit.file
-            }
-            for unit in units
-        ]
-
-        # Write to file
-        output_file = Path(output_path)
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, indent=2)
-
-        self.logger.info(f"Simplified compile_commands written to {output_path}")
-```
-
-**Step 2.2:** Update CLI to add `--dump-simple-db` option
-
-```python
+# Keep/update --dump-simple-db for exporting simplified database
 parser.add_argument(
     '--dump-simple-db',
     type=str,
     default=None,
     metavar='FILE',
     help='Dump simplified compile_commands.json to specified file. '
-         'Only applies when filtering is active (--filter-cfg or --path). '
-         'Simplified version contains only -D flags and -I flags matching filter paths.'
+         'Contains only -D flags and all -I flags. '
+         'Useful for debugging and optimization.'
 )
 ```
 
-**Step 2.3:** Integrate simplifier into main CLI flow
+**Simplify main() function:**
+
+Remove all filter logic:
+- Remove `config = load_config(args.config)`
+- Remove `flag_filter_manager` initialization
+- Remove path filtering logic
+- Keep file simplification (compile_commands_simple.json generation)
+- Keep flexible file selection via `--filter-cfg`
+
+**Update main() flow:**
 
 ```python
-# In main() function, after filter_config is loaded:
+# Generate compile_commands_simple.json (always, for performance)
+logging.info("Generating compile_commands_simple.json for performance optimization")
 
-# Step A: Simplify compile_commands when filtering is active
-simplified_units = units
-simple_db_stats = None
+from .compile_commands_simplifier import CompileCommandsSimplifier
+simplifier = CompileCommandsSimplifier(logger=logger)
+units, simple_db_stats = simplifier.simplify_units(units)
 
-if filter_config.mode != FilterMode.AUTO_DETECT:
-    logging.info("Creating simplified compile_commands.json for performance optimization")
+# Log summary
+logging.info("=" * 60)
+logging.info("SIMPLIFIED COMPILE COMMANDS SUMMARY")
+logging.info("=" * 60)
+logging.info(f"Original units: {simple_db_stats['original_units']}")
+logging.info(f"Kept units: {simple_db_stats['kept_units']}")
+logging.info(f"Removed units: {simple_db_stats['removed_units']}")
+logging.info(f"Kept -D flags: {simple_db_stats['kept_D_flags']}")
+logging.info(f"Kept -I flags: {simple_db_stats['kept_I_flags']}")
+logging.info(f"Removed -I flags: {simple_db_stats['removed_I_flags']}")
+logging.info(f"Removed other flags: {simple_db_stats['removed_other_flags']}")
+logging.info("=" * 60)
 
-    # Initialize simplifier
-    from .compile_commands_simplifier import CompileCommandsSimplifier
-    simplifier = CompileCommandsSimplifier(
-        filter_paths=filter_config.normalized_paths,
+# Export simplified DB if requested
+if args.dump_simple_db:
+    simplifier.dump_to_file(units, args.dump_simple_db)
+
+# Parse with simplified units
+units = simplified_units
+
+# Filter files based on --filter-cfg
+if args.filter_cfg:
+    # Read filter.cfg file
+    with open(args.filter_cfg, 'r') as f:
+        filter_paths = [line.strip() for line in f if line.strip()]
+    
+    logging.info(f"Filtering to {len(filter_paths)} paths from --filter-cfg")
+    
+    # Filter units
+    filtered_units = []
+    for unit in units:
+        # Check if file path matches any filter path
+        file_path = unit.file
+        if any(file_path.startswith(p) or file_path.startswith(p.rstrip('/'))
+               for p in filter_paths):
+            filtered_units.append(unit)
+        else:
+            logging.debug(f"Skipped {file_path} (not in filter paths)")
+    
+    units = filtered_units
+    logging.info(f"Analyzing {len(units)} filtered compilation units")
+```
+
+**Update output generation:**
+
+```python
+# Generate outputs
+json_path = None
+
+# Step 1: Generate JSON first (for html format)
+if args.format == 'html':
+    json_path = Path(str(output_paths.get('json', '/tmp/call_graph_temp.json')))
+    logging.info(f"Generating JSON output to {json_path}")
+    emitter = JSONEmitter(str(json_path))
+    emitter.emit(functions_to_emit, relationships_to_emit)
+    logging.info(f"JSON generated at {json_path}")
+
+# Step 2: Generate JSON output for json format
+if args.format == 'json':
+    logging.info(f"Generating JSON output to {output_paths['json']}")
+    emitter = JSONEmitter(str(output_paths['json']))
+    emitter.emit(functions_to_emit, relationships_to_emit)
+    logging.info(f"JSON output: {output_paths.get('json')}")
+
+# Step 3: Generate HTML (always from JSON file)
+if args.format == 'html':
+    logging.info("Generating file-level HTML graph from JSON...")
+    if not json_path:
+        logging.error("JSON path not available for HTML generation")
+        return 1
+
+    # Load JSON
+    with open(json_path, 'r', encoding='utf-8') as f:
+        import json as json_lib
+        functions_dict = json_lib.load(f)
+
+    # Remove temporary JSON file if it was temporary
+    import os
+    if 'call_graph_temp.json' in str(json_path):
+        os.remove(json_path)
+        logging.info(f"Removed temporary JSON file: {json_path}")
+
+    # Generate HTML from JSON using FileGraphGenerator
+    from .file_graph_generator import FileGraphGenerator
+    file_gen = FileGraphGenerator(
+        functions=functions_dict,
+        relationships=relationships_to_emit,
         logger=logger
     )
-
-    # Simplify units
-    simplified_units, simple_db_stats = simplifier.simplify_units(units)
-
-    # Log summary
-    logging.info("=" * 60)
-    logging.info("SIMPLIFIED COMPILE COMMANDS SUMMARY")
-    logging.info("=" * 60)
-    logging.info(f"Original units: {simple_db_stats['original_units']}")
-    logging.info(f"Kept units: {simple_db_stats['kept_units']}")
-    logging.info(f"Removed units: {simple_db_stats['removed_units']}")
-    logging.info(f"Kept -D flags: {simple_db_stats['kept_D_flags']}")
-    logging.info(f"Kept -I flags: {simple_db_stats['kept_I_flags']}")
-    logging.info(f"Removed -I flags: {simple_db_stats['removed_I_flags']}")
-    logging.info(f"Removed other flags: {simple_db_stats['removed_other_flags']}")
-    logging.info("=" * 60)
-
-    # Dump to file if requested
-    if args.dump_simple_db:
-        simplifier.dump_to_file(simplified_units, args.dump_simple_db)
-
-    # Use simplified units for parsing
-    units = simplified_units
-
-# Step B: Continue with existing parsing logic using simplified units
-# ... rest of existing code ...
+    html_content = file_gen.generate_html()
+    write_html_file(html_content, str(output_paths['html']))
+    logging.info(f"HTML output: {output_paths.get('html')}")
 ```
 
-**Step 2.4:** Remove aggressive filter (replace with simplifier)
+**Add import:**
+```python
+from .compile_commands_simplifier import CompileCommandsSimplifier
+```
 
-The existing `_apply_aggressive_filter()` function in cli.py duplicates the simplifier logic. Replace it with the new `CompileCommandsSimplifier`.
-
-**Step 2.5:** Update import statements
-
-Add import for `CompileCommandsSimplifier` at top of cli.py.
-
-### 2.4 Testing Strategy
-
-**Test 2.1:** Simplification with filter.cfg
-- Run CLI with --filter-cfg
-- Verify simplified DB is created in memory
-- Verify stats are logged correctly
-
-**Test 2.2:** Simplification with --path
-- Run CLI with --path
-- Verify simplified DB is created
-- Verify only matching files are kept
-
-**Test 2.3:** Dump to file
-- Run CLI with --dump-simple-db
-- Verify file is created
-- Verify file content is valid JSON
-- Verify file contains only filtered data
-
-**Test 2.4:** No simplification without filter
-- Run CLI without filter options
-- Verify no simplification occurs
-- Verify all original units are used
-
-**Test 2.5:** Performance comparison
-- Measure parsing time with vs without simplification
-- Verify performance improvement on large projects
-
----
-
-## Phase 3: Remove Deprecated --format all Option
-
-### 3.1 Problem Analysis
-
-**Current State:**
-- CLI supports `--format all` which generates both JSON and HTML
-- This option is redundant since HTML generation already includes all data
-- Users can use `--format json` and `--format html` separately
-
-### 3.2 Implementation Steps
-
-**Step 3.1:** Remove 'all' from format choices
+**Update `_determine_output_paths()`:**
 
 ```python
-# Before:
-parser.add_argument(
-    '--format', '-F',
-    type=str,
-    choices=['json', 'html', 'all'],
-    default='json',
-    ...
-)
+def _determine_output_paths(args: argparse.Namespace) -> Dict[str, Path]:
+    """Determine output file paths based on format and arguments."""
+    paths = {}
 
-# After:
-parser.add_argument(
-    '--format', '-F',
-    type=str,
-    choices=['json', 'html'],
-    default='json',
-    ...
-)
+    # Determine base output path
+    if args.output:
+        base_path = Path(args.output)
+    else:
+        base_path = Path("output")
+
+    # Set paths based on format
+    if args.format == 'json':
+        paths['json'] = base_path if base_path.suffix == '.json' else base_path.with_suffix('.json')
+    elif args.format == 'html':
+        paths['json'] = base_path.with_suffix('.json')  # Always generate JSON first
+        paths['html'] = base_path if base_path.suffix == '.html' else base_path.with_suffix('.html')
+    else:
+        # Default to JSON
+        paths['json'] = base_path if base_path.suffix == '.json' else base_path.with_suffix('.json')
+
+    return paths
 ```
 
-**Step 3.2:** Remove 'all' format handling in main()
+**Update `_print_output_summary()`:**
 
 ```python
-# Remove this block:
-elif args.format == 'all':
-    # All format: generate JSON + HTML
-    paths['json'] = base_path if base_path.suffix == '.json' else base_path.with_suffix('.json')
-    paths['html'] = base_path.with_suffix('.html')
+def _print_output_summary(format_type: str, output_paths: Dict[str, Path]) -> None:
+    """Print summary of generated output files."""
+    print("\n" + "=" * 50)
+    print("Output Generation Complete")
+    print("=" * 50)
 
-# Update _determine_output_paths() to handle only json and html
+    if format_type == 'json':
+        if output_paths.get('json'):
+            print(f"  JSON:  {output_paths['json']}")
+
+    if format_type == 'html':
+        if output_paths.get('html'):
+            print(f"  JSON:  {output_paths.get('json')}")
+            print(f"  HTML:  {output_paths.get('html')}")
+
+    print("=" * 50 + "\n")
 ```
 
-**Step 3.3:** Update help text
+---
 
-Remove mention of 'all' option from help description.
+### src/ast_parser.py
 
-**Step 3.4:** Update documentation
-
-Update USAGE.md and README.md to remove references to `--format all`.
-
-### 3.3 Testing Strategy
-
-**Test 3.1:** Verify 'all' option is rejected
-- Try to run with `--format all`
-- Verify error message
-
-**Test 3.2:** Verify JSON output works
-- Run with `--format json`
-- Verify JSON is generated
-
-**Test 3.3:** Verify HTML output works
-- Run with `--format html`
-- Verify HTML is generated
-
-**Test 3.4:** Verify default format is JSON
-- Run without --format
-- Verify JSON is generated
+**No changes** - Already simplified to remove adaptive retry.
 
 ---
 
-## Implementation Order
+### src/function_extractor.py
 
-**Priority 1 (Bug Fix - Critical):**
-- Phase 1: Fix EChartsGenerator bug
-- This blocks HTML generation functionality
-
-**Priority 2 (Feature Enhancement):**
-- Phase 2: Add compile_commands_simple.json preprocessing
-- This improves performance for large projects
-
-**Priority 3 (Cleanup):**
-- Phase 3: Remove deprecated --format all option
-- This is low priority, nice-to-have cleanup
-
-**Recommended Order:**
-1. Phase 1 (Bug Fix) → Phase 2 (Feature) → Phase 3 (Cleanup)
+**No changes** - Already simplified to remove filter_paths parameter.
 
 ---
 
-## File Changes Summary
+### src/file_graph_generator.py
 
-### New Files
-- `src/compile_commands_simplifier.py` - New module for simplifying compile_commands.json
+**Update edge label format to: `"func @ file(start_line-end_line)"**
 
-### Modified Files
-- `src/echarts_generator.py`
-  - Update `__init__()` to accept both List[FunctionInfo] and List[Dict]
-  - Update `_create_nodes()` to handle both dict and FunctionInfo inputs
-  - Update type hints and docstrings
-
-- `src/cli.py`
-  - Add `--dump-simple-db` argument
-  - Remove 'all' from `--format` choices
-  - Import `CompileCommandsSimplifier`
-  - Integrate simplifier into main flow
-  - Remove `_apply_aggressive_filter()` function (replaced by simplifier)
-  - Update `_determine_output_paths()` to handle only json/html formats
-
-- `REQUIREMENTS.md`
-  - Add requirements for simplification feature
-  - Add bug fix requirements
-  - Update format requirements
-
-- `USAGE.md`
-  - Document `--dump-simple-db` option
-  - Remove references to `--format all`
-  - Update performance comparison with simplification
-
-- `README.md`
-  - Remove references to `--format all`
+Already completed - uses `line_range` from function data.
 
 ---
 
-## Backward Compatibility
+### src/compile_commands_simplifier.py
 
-### Breaking Changes
-- **Phase 3:** `--format all` option removed (low impact, rarely used)
-  - Migration: Use `--format json` and `--format html` separately
-
-### Non-Breaking Changes
-- **Phase 1:** EChartsGenerator now accepts both dicts and objects
-  - Fully backward compatible with existing code
-
-- **Phase 2:** Simplified DB creation is internal optimization
-  - Does not affect API or output format
-  - New `--dump-simple-db` flag is optional
+**Restore and verify** - Keep for automatic compile_commands_simple.json generation.
 
 ---
 
-## Testing Plan
+### REQUIREMENTS.md
+
+Update to reflect new architecture and remove filter-related requirements.
+
+---
+
+### README.md
+
+Update documentation and examples to match new CLI options.
+
+---
+
+### USAGE.md
+
+Update documentation for new options.
+
+---
+
+## Implementation Steps
+
+### Phase 1: Delete Filter-Related Files
+
+1. Delete source files:
+   - `src/filter_config.py`
+   - `src/compilation_db_filter.py`
+   - `src/adaptive_flag_parser.py`
+   - `src/flag_filter_manager.py`
+   - `src/flag_whitelist.py`
+
+2. Delete test files:
+   - `tests/test_filter_config.py`
+   - `tests/test_filter/` (entire directory)
+
+3. Verify no orphaned imports remain (grep for deleted modules)
+
+### Phase 2: Update CLI (src/cli.py)
+
+1. Remove imports for filter modules
+2. Add import for `CompileCommandsSimplifier`
+3. Remove CLI arguments: `--config`, `--path`, `--dump-filtered-db`, `--disable-retry`
+4. Add/keep `--filter-cfg` for flexible file selection
+5. Add/keep `--dump-simple-db` for exporting simplified database
+6. Remove `load_config()` function
+7. Simplify `main()` function:
+   - Generate compile_commands_simple.json (always)
+   - Filter files based on `--filter-cfg`
+   - Remove all other filter logic
+8. Update output generation for HTML format (both JSON and HTML)
+9. Update `_determine_output_paths()` for both formats
+10. Update `_print_output_summary()` to show both outputs
+
+### Phase 3: Verify Core Modules
+
+1. Verify `ast_parser.py` has no adaptive retry
+2. Verify `function_extractor.py` has no filter_paths
+3. Verify `file_graph_generator.py` has correct edge labels
+
+### Phase 4: Update Documentation
+
+1. Update `REQUIREMENTS.md` - remove filter requirements
+2. Update `README.md` - remove filter documentation, add new examples
+3. Update `USAGE.md` - remove filter usage, add `--filter-cfg` and `--dump-simple-db`
+
+---
+
+## Simplified Workflow After Refactoring
+
+```
+1. Load compile_commands.json
+   ↓
+2. Generate compile_commands_simple.json (automatically, keeps -D/-I flags)
+   ↓
+3. Parse with simplified commands (or filter files via --filter-cfg)
+   ↓
+4. Extract all functions (no filtering)
+   ↓
+5. Build call relationships
+   ↓
+6. Generate output.json
+   ↓
+7. (Optional) Export compile_commands_simple.json via --dump-simple-db
+   ↓
+8. (Optional) Generate output.html from output.json using FileGraphGenerator
+```
+
+---
+
+## Testing
 
 ### Unit Tests
-1. Test `echarts_generator.py` with dict inputs
-2. Test `echarts_generator.py` with FunctionInfo inputs
-3. Test `CompileCommandsSimplifier.simplify_units()`
-4. Test `CompileCommandsSimplifier._is_allowed_path()`
-5. Test `CompileCommandsSimplifier._filter_flags()`
+- Test file simplification logic
+- Test `--filter-cfg` file parsing
+- Test FileGraphGenerator edge label format
 
 ### Integration Tests
-1. Full CLI workflow with `--format html`
-2. Full CLI workflow with `--format json`
-3. Full CLI workflow with `--filter-cfg` and simplification
-4. Full CLI workflow with `--path` and simplification
-5. Full CLI workflow with `--dump-simple-db`
+- Test `--format json` output
+- Test `--format html` generates both JSON and HTML
+- Test `--dump-simple-db` exports simplified database
+- Test `--filter-cfg` filters files correctly
 
 ### Regression Tests
-1. Run existing test suite
-2. Verify all existing functionality still works
-3. Verify output format unchanged (except for deprecated option)
-
----
-
-## Rollback Plan
-
-If issues arise after implementation:
-
-**Phase 1 Rollback:**
-- Revert `echarts_generator.py` changes
-- Keep original code path for HTML generation
-
-**Phase 2 Rollback:**
-- Revert CLI integration of simplifier
-- Keep `CompileCommandsSimplifier` module but don't use it
-- Keep `--dump-simple-db` flag but make it no-op
-
-**Phase 3 Rollback:**
-- Restore `--format all` option
-- Restore 'all' format handling
+- Run existing tests (excluding deleted filter tests)
+- Verify basic functionality still works
 
 ---
 
 ## Success Criteria
 
-Implementation is successful when:
-
-1. ✅ HTML generation works without AttributeError
-2. ✅ Simplified compile_commands is created when filtering is active
-3. ✅ `--dump-simple-db` flag works and outputs valid JSON
-4. ✅ Performance improvement observed on large projects
-5. ✅ `--format all` option removed and error raised if used
-6. ✅ All existing tests pass
-7. ✅ Documentation updated and accurate
-8. ✅ No breaking changes to existing functionality (except deprecated option)
+1. ✅ All filter-related files deleted
+2. ✅ YAML config and path filtering removed
+3. ✅ `--filter-cfg` kept for flexible file selection
+4. ✅ `--dump-simple-db` kept for exporting simplified DB
+5. ✅ compile_commands_simple.json generated automatically
+6. ✅ HTML generation depends ONLY on JSON
+7. ✅ `--format html` outputs both JSON and HTML files
+8. ✅ HTML shows file-level nodes
+9. ✅ Edge labels display: `"func @ file(start_line-end_line)"`
+10. ✅ Tests pass (excluding deleted filter tests)
+11. ✅ Documentation updated
 
 ---
 
-## Phase 4: Code Quality Fixes (Post-Audit)
+## Rollback Plan
 
-### 4.1 Remove Temporary Files
+If issues arise:
 
-**Problem:** `cli_new.py` and `cli_output_gen.py` are untracked files with incomplete code.
-
-**Action:** Delete these temporary files
-- Remove `src/cli_new.py`
-- Remove `src/cli_output_gen.py`
-
-**Reason:** These files appear to be partial copies of code sections during development and are not part of the production codebase.
-
-### 4.2 Fix Type Hint in CompileCommandsSimplifier
-
-**Problem:** Line 15 in `compile_commands_simplifier.py` has incorrect type hint:
-```python
-def __init__(self, filter_paths: List[str], logger: logging.Logger = None):
-```
-
-**Issue:** Type hint should be `Optional[logging.Logger]` to allow `None`.
-
-**Action:** Update type hint:
-```python
-from typing import Optional
-
-def __init__(self, filter_paths: List[str], logger: Optional[logging.Logger] = None):
-```
-
-**Files Modified:**
-- `src/compile_commands_simplifier.py`
-
-### 4.3 Fix None Handling in EChartsGenerator
-
-**Problem:** Lines 110-122 in `echarts_generator.py` - `func_index` can be `None` and is used as dict key.
-
-**Current Code:**
-```python
-if isinstance(func, dict):
-    func_index = func.get('index')  # Can be None!
-    ...
-else:
-    func_index = func.index
-    ...
-# Get relationships
-parents, children = self.relationships.get(func_index, ([], []))  # None as key!
-```
-
-**Action:** Add None validation before using `func_index`:
-```python
-if isinstance(func, dict):
-    func_index = func.get('index')
-    ...
-else:
-    func_index = func.index
-    ...
-
-# Validate func_index before using
-if func_index is None:
-    self.logger.warning(f"Function has no index: {func}")
-    continue
-
-# Get relationships
-parents, children = self.relationships.get(func_index, ([], []))
-```
-
-**Files Modified:**
-- `src/echarts_generator.py`
-
-### 4.4 Fix Undocumented CLI Option
-
-**Problem:** Line 248 in `cli.py` uses `args.no_aggressive_filter` but this argument is not defined in the argument parser.
-
-**Current Code:**
-```python
-if not args.no_aggressive_filter and filter_config.mode != FilterMode.AUTO_DETECT:
-```
-
-**Issue:** `no_aggressive_filter` is not defined anywhere in `parse_args()`.
-
-**Action Options:**
-
-**Option A: Remove the check (RECOMMENDED)**
-- Since aggressive filter was replaced by `CompileCommandsSimplifier`, this check is obsolete
-- Remove line 248 entirely
-- Update related code if any
-
-**Option B: Add the argument to parser (NOT RECOMMENDED)**
-- Add `--no-aggressive-filter` to argument parser
-- This perpetuates obsolete functionality
-
-**Decision:** Remove the check (Option A)
-
-**Files Modified:**
-- `src/cli.py`
-
-### 4.5 Document Test Environment Requirement
-
-**Problem:** Tests cannot run outside nix-shell due to missing clang module.
-
-**Action:** Update documentation to specify nix-shell requirement:
-
-**Files to Update:**
-- `INSTALL.md` - Add nix-shell setup instructions
-- `README.md` - Note about nix-shell for testing
-- `REQUIREMENTS.md` - Already updated with C5.1-C5.4
-
-**Example addition to INSTALL.md:**
-```markdown
-## Running Tests
-
-Tests require the clang module from libclang. Run tests in nix-shell:
-
-```bash
-nix-shell shell.nix --run 'pytest tests/'
-```
-
-If you encounter "ModuleNotFoundError: No module named 'clang'", ensure you are running inside nix-shell.
-```
-
-### 4.6 Implementation Order
-
-**Priority 1 (Type Safety - Critical):**
-- Fix type hint in `compile_commands_simplifier.py`
-- Fix None handling in `echarts_generator.py`
-
-**Priority 2 (Code Hygiene - High):**
-- Remove temporary files (`cli_new.py`, `cli_output_gen.py`)
-- Fix undocumented CLI option in `cli.py`
-
-**Priority 3 (Documentation - Medium):**
-- Document nix-shell test environment requirement
-
-**Recommended Order:**
-1. Type safety fixes (prevent runtime errors)
-2. Remove temporary files (clean up)
-3. Fix CLI option (remove obsolete code)
-4. Update documentation
-
-### 4.7 Testing Strategy
-
-**Test 4.1:** Verify type hints are correct
-- Run mypy or similar type checker
-- Verify no type warnings
-
-**Test 4.2:** Verify None handling
-- Test with JSON missing 'index' field
-- Verify graceful handling (skip or warning)
-
-**Test 4.3:** Verify CLI works after option removal
-- Run all CLI commands
-- Verify no reference to `no_aggressive_filter`
-
-**Test 4.4:** Verify tests run in nix-shell
-- Run `nix-shell shell.nix --run 'pytest tests/'`
-- Verify all tests pass
-
-### 4.8 Rollback Plan
-
-If issues arise after implementation:
-
-**Type Hint Fix Rollback:**
-- Revert type hint to `logger: logging.Logger = None`
-- Functionality unchanged, only type hint affected
-
-**None Handling Fix Rollback:**
-- Revert to original code
-- May cause KeyError if JSON is malformed
-
-**CLI Option Fix Rollback:**
-- Add `--no-aggressive-filter` argument to parser
-- Add back line 248 check
-
-**Documentation Rollback:**
-- Remove nix-shell requirement notes
-- Tests may fail outside nix-shell (expected behavior)
-
-### 4.9 Additional Quality Checks
-
-After implementing fixes:
-
-1. Run mypy type checker: `mypy src/`
-2. Run flake8 linter: `flake8 src/`
-3. Run all tests: `nix-shell shell.nix --run 'pytest tests/'`
-4. Check for remaining temporary files: `find src/ -name '*_new.py' -o -name '*_temp.py'`
-5. Verify all CLI options are documented: `python -m src.cli --help` and compare with `parse_args()`
-
-### 4.10 Success Criteria for Phase 4
-
-Phase 4 is successful when:
-
-1. ✅ No temporary files remain in src/
-2. ✅ All type hints are correct and pass mypy
-3. ✅ None values are handled safely
-4. ✅ All CLI arguments are properly defined
-5. ✅ Tests run successfully in nix-shell
-6. ✅ Documentation includes nix-shell requirement
-7. ✅ No linting errors
-8. ✅ Code review passes
+1. Restore deleted files from git history
+2. Restore CLI arguments and filter logic
+3. Revert documentation changes

@@ -6,7 +6,7 @@ from pathlib import Path
 from string import Template
 from typing import Dict, List, Tuple, Optional, Set
 
-from echarts_templates import CSS_TEMPLATE
+from .echarts_templates import CSS_TEMPLATE
 
 
 class FileGraphGenerator:
@@ -134,6 +134,11 @@ function initGraph() {
 function tooltipFormatter(params) {
   const data = params.data;
 
+  // Edge tooltip (has tooltip field)
+  if (data.tooltip) {
+    return data.tooltip;
+  }
+
   // File node tooltip
   return `
     <div style="padding: 8px; font-family: Arial, sans-serif; max-width: 300px;">
@@ -197,6 +202,7 @@ function handleSearch(query) {
 
   updateChartData(visibleNodes, visibleEdges);
   document.getElementById('match-count').textContent = `${matchingNodes.length} 个文件匹配`;
+
 }
 
 function updateChartData(nodes, edges) {
@@ -305,19 +311,24 @@ function setupEventListeners() {
 
     def __init__(self,
                  functions: List[Dict],
-                 relationships: Dict[int, Tuple[List[int], List[int]]],
                  logger: Optional[logging.Logger] = None):
         """
         Initialize file graph generator.
 
         Args:
             functions: List of function dictionaries from JSON output
-            relationships: Dict mapping function index to (parents, children) tuples
+                       Each function should have 'parents' and 'children' fields
             logger: Optional logger instance
         """
         self.functions = functions
-        self.relationships = relationships
         self.logger = logger or logging.getLogger(__name__)
+
+        # Rebuild relationships from functions data
+        # Each function has 'parents' and 'children' fields from JSON
+        self.relationships = {
+            func['index']: (func['parents'], func['children'])
+            for func in functions
+        }
 
     def generate_html(self) -> str:
         """
@@ -418,7 +429,7 @@ function setupEventListeners() {
         # Initialize relationship tracking for each file
         for file_path in file_functions:
             file_relationships[file_path] = {
-                'outgoing': {},  # target_file: {function_names, line_ranges}
+                'outgoing': {},  # target_file: {function_names, line_ranges, function_indices}
                 'incoming': {},  # source_file: {function_names, line_ranges}
                 'function_count': len(file_functions[file_path])
             }
@@ -433,7 +444,7 @@ function setupEventListeners() {
             func_idx = func['index']
             source_file = func['self']['path']
             func_name = func['self']['name']
-            func_line = func['self']['line'][0]
+            line_range = func['self']['line']  # Tuple of (start, end)
 
             # Get children (functions this function calls)
             parents, children = self.relationships.get(func_idx, ([], []))
@@ -446,25 +457,27 @@ function setupEventListeners() {
                     if target_file == source_file:
                         continue
 
-                    # Record file-to-file call
+                    # Record file-to-file call with line_range and child function index
                     if target_file not in file_relationships[source_file]['outgoing']:
                         file_relationships[source_file]['outgoing'][target_file] = {
                             'functions': [],
-                            'lines': []
+                            'line_ranges': [],  # Source call line ranges
+                            'function_indices': []  # Target function indices
                         }
 
                     file_relationships[source_file]['outgoing'][target_file]['functions'].append(func_name)
-                    file_relationships[source_file]['outgoing'][target_file]['lines'].append(func_line)
+                    file_relationships[source_file]['outgoing'][target_file]['line_ranges'].append(line_range)
+                    file_relationships[source_file]['outgoing'][target_file]['function_indices'].append(child_idx)
 
                     # Record incoming for target file
                     if source_file not in file_relationships[target_file]['incoming']:
                         file_relationships[target_file]['incoming'][source_file] = {
                             'functions': [],
-                            'lines': []
+                            'line_ranges': []
                         }
 
                     file_relationships[target_file]['incoming'][source_file]['functions'].append(func_name)
-                    file_relationships[target_file]['incoming'][source_file]['lines'].append(func_line)
+                    file_relationships[target_file]['incoming'][source_file]['line_ranges'].append(line_range)
 
         return file_relationships
 
@@ -485,7 +498,7 @@ function setupEventListeners() {
         file_id = 0
 
         for file_path, funcs in file_functions.items():
-            file_name = file_path.split('/')[-1]
+            file_name = Path(file_path).name
 
             # Get relationship counts
             outgoing_count = len(file_relationships[file_path]['outgoing'])
@@ -494,10 +507,10 @@ function setupEventListeners() {
             # Build call details for tooltip
             call_details = []
             for target_file, info in file_relationships[file_path]['outgoing'].items():
-                target_name = target_file.split('/')[-1]
+                target_name = Path(target_file).name
                 func_name = info['functions'][0]
-                line = info['lines'][0]
-                call_details.append(f"→ {target_name}: {func_name} @ {line}")
+                line_range = info['line_ranges'][0]  # First call's line_range
+                call_details.append(f"→ {target_name}: {func_name} @ {line_range[0]}-{line_range[1]}")
 
             node = {
                 'id': file_id,
@@ -526,6 +539,9 @@ function setupEventListeners() {
         """
         edges = []
 
+        # Build a map from function index to function definition for quick lookup
+        func_index_to_def = {func['index']: func for func in self.functions}
+
         # Create file path to node ID mapping
         file_to_id = {}
         for file_path in file_relationships:
@@ -534,18 +550,45 @@ function setupEventListeners() {
         # Create edges from outgoing relationships
         for source_file, rels in file_relationships.items():
             for target_file, call_info in rels['outgoing'].items():
-                # Create edge label: "funcName @ sourceFile"
-                func_name = call_info['functions'][0]
-                source_name = source_file.split('/')[-1]
-                target_name = target_file.split('/')[-1]
-                line = call_info['lines'][0]
+                # Get source and target file names
+                source_name = Path(source_file).name
+                target_name = Path(target_file).name
 
-                label = f"{func_name} @ {source_name}:{line}"
+                # Get first function name and child function index
+                func_name = call_info['functions'][0]
+                child_idx = call_info['function_indices'][0]
+
+                # Get target function definition and its line range
+                if child_idx in func_index_to_def:
+                    target_func = func_index_to_def[child_idx]
+                    target_line_range = target_func['self']['line']
+                else:
+                    # Fallback if function index not found
+                    target_line_range = call_info['line_ranges'][0]
+
+                # Format: "source_name ---- @ func_name (start, end) --> target_name"
+                label = f"{source_name} ---- @ {func_name} ({target_line_range[0]}, {target_line_range[1]}) --> {target_name}"
+
+                # Build tooltip showing all calls
+                tooltip_lines = []
+                for i, fn in enumerate(call_info['functions']):
+                    line_range = call_info['line_ranges'][i]
+                    tooltip_lines.append(f"{fn} @ {source_name}({line_range[0]}-{line_range[1]})")
+
+                # Create tooltip HTML
+                tooltip = '<div style="padding: 8px; font-family: Arial, sans-serif; max-width: 400px;">'
+                tooltip += '<strong style="font-size: 14px;">All Calls</strong><br/>'
+                tooltip += f'<span style="color: #666; font-size: 12px;">{source_name} → {target_name}</span><br/>'
+                tooltip += f'<span style="color: #666; font-size: 12px;">Total: {len(call_info["functions"])} calls</span><br/>'
+                tooltip += '<hr/><span style="color: #666; font-size: 12px;">Details:</span><br/>'
+                tooltip += '<br/>'.join([f'• {line}' for line in tooltip_lines])
+                tooltip += '</div>'
 
                 edge = {
                     'source': file_to_id[source_file],
                     'target': file_to_id[target_file],
                     'label': label,
+                    'tooltip': tooltip,
                     'lineStyle': {
                         'width': min(5, 1 + len(call_info['functions']) / 2),
                         'color': '#999',

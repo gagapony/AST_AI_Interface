@@ -6,22 +6,60 @@ import shlex
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .compilation_db import CompilationUnit
+try:
+    from .compilation_db import CompilationUnit
+except ImportError:
+    from compilation_db import CompilationUnit
 
 
 class CompileCommandsSimplifier:
     """Simplify compile_commands.json by filtering flags."""
 
-    def __init__(self, filter_paths: List[str], logger: Optional[logging.Logger] = None):
+    def __init__(self, filter_paths: List[str], project_root: Optional[str] = None, logger: Optional[logging.Logger] = None):
         """
         Initialize simplifier.
 
         Args:
             filter_paths: List of normalized filter paths
+            project_root: Root directory of the project (absolute path)
             logger: Optional logger instance
         """
         self.filter_paths = [p.rstrip('/') for p in filter_paths]
+        self.project_root = project_root
         self.logger = logger or logging.getLogger(__name__)
+
+        # Resolve filter paths to absolute paths if project_root is provided
+        if self.project_root:
+            self.resolved_filter_paths = self._resolve_filter_paths()
+        else:
+            self.resolved_filter_paths = self.filter_paths
+
+    def _resolve_filter_paths(self) -> List[str]:
+        """
+        Resolve relative filter paths to absolute paths based on project_root.
+
+        Returns:
+            List of resolved absolute filter paths
+        """
+        if not self.project_root:
+            return self.filter_paths
+
+        resolved = []
+        project_root_path = Path(self.project_root)
+
+        for filter_path in self.filter_paths:
+            filter_obj = Path(filter_path)
+
+            # If filter_path is already absolute, use it as is
+            if filter_obj.is_absolute():
+                resolved.append(str(filter_obj))
+            else:
+                # Resolve relative to project root
+                absolute_path = project_root_path / filter_obj
+                resolved.append(str(absolute_path.resolve()))
+
+        self.logger.debug(f"Resolved filter paths: {resolved}")
+        return resolved
 
     def simplify_units(self, units: List[CompilationUnit]) -> Tuple[List[CompilationUnit], Dict]:
         """
@@ -85,11 +123,39 @@ class CompileCommandsSimplifier:
         return simplified_units, stats
 
     def _is_allowed_path(self, path: str) -> bool:
-        """Check if path matches any filter path."""
+        """
+        Check if path matches any resolved filter path.
+
+        Args:
+            path: Path to check (can be absolute or relative)
+
+        Returns:
+            True if path matches any filter, False otherwise
+        """
         path = path.rstrip('/')
-        for filter_path in self.filter_paths:
-            if path == filter_path or path.startswith(filter_path + '/'):
+        path_obj = Path(path)
+
+        # Resolve to absolute path for consistent comparison
+        if not path_obj.is_absolute():
+            if self.project_root:
+                abs_path = Path(self.project_root) / path_obj
+            else:
+                abs_path = path_obj.resolve()
+        else:
+            abs_path = path_obj
+
+        abs_path_str = str(abs_path.resolve())
+
+        for resolved_filter in self.resolved_filter_paths:
+            resolved_filter = resolved_filter.rstrip('/')
+            filter_obj = Path(resolved_filter)
+
+            # Do direct comparison with resolved absolute paths
+            if abs_path_str == resolved_filter or abs_path_str.startswith(resolved_filter + '/'):
+                self.logger.debug(f"Matched filter: {abs_path_str} matches {resolved_filter}")
                 return True
+
+        self.logger.debug(f"No match for path: {abs_path_str} against filters: {self.resolved_filter_paths}")
         return False
 
     def _filter_flags(self, flags: List[str]) -> Tuple[List[str], Dict]:

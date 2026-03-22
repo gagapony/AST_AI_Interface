@@ -2,29 +2,21 @@
 """Command-line interface for clang-call-analyzer."""
 
 import argparse
+import json as json_lib
 import logging
+import os
 import sys
 from pathlib import Path
-from typing import Dict, Optional
-
-try:
-    import yaml
-    YAML_AVAILABLE = True
-except ImportError:
-    YAML_AVAILABLE = False
+from typing import Dict
 
 from .compilation_db import CompilationDatabase
 from .ast_parser import ASTParser
-from .function_extractor import FunctionExtractor, FunctionInfo
+from .function_extractor import FunctionExtractor
 from .function_registry import FunctionRegistry
 from .call_analyzer import CallAnalyzer
 from .relationship_builder import RelationshipBuilder
 from .json_emitter import JSONEmitter
-from .flag_filter_manager import FlagFilterManager
-from .filter_config import FilterConfigLoader, FilterConfig, FilterMode
-from .compilation_db_filter import CompilationDatabaseFilter
-from .echarts_generator import EChartsGenerator, write_html_file
-from .file_graph_generator import FileGraphGenerator
+from .file_graph_generator import FileGraphGenerator, write_html_file
 from .compile_commands_simplifier import CompileCommandsSimplifier
 
 
@@ -57,52 +49,6 @@ def parse_args() -> argparse.Namespace:
              'HTML is always generated from JSON file.'
     )
     parser.add_argument(
-        '--config', '-c',
-        type=str,
-        default=None,
-        help='Path to configuration file (YAML format)'
-    )
-    # Filter configuration (mutually exclusive)
-    filter_group = parser.add_mutually_exclusive_group()
-    filter_group.add_argument(
-        '--filter-cfg', '-f',
-        type=str,
-        default=None,
-        metavar='FILE',
-        help='Path to filter.cfg file (INI format filter paths). '
-             'If specified, only files matching these paths are analyzed. '
-             'Takes priority over --path.'
-    )
-    filter_group.add_argument(
-        '--path', '-p',
-        type=str,
-        default=None,
-        metavar='PATH',
-        help='Filter path to analyze (single directory). '
-             'Only files in this path are analyzed. '
-             'Ignored if --filter-cfg is specified.'
-    )
-
-    parser.add_argument(
-        '--dump-filtered-db',
-        type=str,
-        default=None,
-        metavar='FILE',
-        help='Dump filtered compile_commands.json to specified file. '
-             'Useful for debugging filter configuration.'
-    )
-
-    parser.add_argument(
-        '--dump-simple-db',
-        type=str,
-        default=None,
-        metavar='FILE',
-        help='Dump simplified compile_commands.json to specified file. '
-             'Only applies when filtering is active (--filter-cfg or --path). '
-             'Simplified version contains only -D flags and -I flags matching filter paths.'
-    )
-
-    parser.add_argument(
         '--verbose', '-v',
         type=str,
         choices=['error', 'warning', 'info', 'debug'],
@@ -110,14 +56,29 @@ def parse_args() -> argparse.Namespace:
         help='Logging level (default: warning)'
     )
     parser.add_argument(
-        '--disable-retry',
-        action='store_true',
-        help='Disable adaptive retry (parse with whitelisted flags only)'
-    )
-    parser.add_argument(
         '--version',
         action='version',
         version='clang-call-analyzer 1.0.0'
+    )
+    # Add --filter-cfg option for flexible file selection
+    parser.add_argument(
+        '--filter-cfg', '-f',
+        type=str,
+        default=None,
+        metavar='FILE',
+        help='Filter.cfg file (INI format). '
+             'If specified, only files/paths in this file are analyzed. '
+             'Supports multiple paths (one per line).'
+    )
+    # Add --simple-db-path option for customizing simplified database path
+    parser.add_argument(
+        '--simple-db-path',
+        type=str,
+        default=None,
+        metavar='FILE',
+        help='Custom path for compile_commands_simple.json. '
+             'Default: compile_commands_simple.json in the current directory. '
+             'This file contains only -D flags and all -I flags.'
     )
 
     return parser.parse_args()
@@ -138,40 +99,7 @@ def setup_logging(level: str) -> None:
     )
 
 
-def load_config(config_path: Optional[str]) -> dict:
-    """
-    Load configuration from YAML file.
-
-    Args:
-        config_path: Path to config file, or None for default config
-
-    Returns:
-        Configuration dictionary
-    """
-    if not config_path:
-        # Return default empty config
-        return {}
-
-    if not YAML_AVAILABLE:
-        logging.warning("PyYAML not available, ignoring config file")
-        return {}
-
-    config_file = Path(config_path)
-    if not config_file.exists():
-        logging.error(f"Config file not found: {config_path}")
-        return {}
-
-    try:
-        with open(config_file, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f) or {}
-        logging.info(f"Loaded configuration from {config_path}")
-        return config
-    except Exception as e:
-        logging.error(f"Failed to load config: {e}")
-        return {}
-
-
-def find_compile_commands(start_dir: Path) -> Optional[Path]:
+def find_compile_commands(start_dir: Path) -> Path:
     """Search for compile_commands.json in parent directories."""
     current = start_dir.absolute()
 
@@ -188,7 +116,29 @@ def find_compile_commands(start_dir: Path) -> Optional[Path]:
 
         current = current.parent
 
-    return None
+    # Not found
+    raise FileNotFoundError(
+        f"compile_commands.json not found in {start_dir} or any parent directory"
+    )
+
+
+def read_filter_cfg(cfg_path: str) -> list:
+    """
+    Read filter.cfg file and return list of paths.
+
+    Args:
+        cfg_path: Path to filter.cfg file
+
+    Returns:
+        List of paths (one per line, stripped)
+    """
+    paths = []
+    with open(cfg_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):  # Skip comments
+                paths.append(line)
+    return paths
 
 
 def main() -> int:
@@ -196,130 +146,82 @@ def main() -> int:
     args = parse_args()
     setup_logging(args.verbose)
 
-    # Load configuration
-    config = load_config(args.config)
-
-    # Override retry setting from command line
-    if args.disable_retry:
-        config['flag_filter'] = config.get('flag_filter', {})
-        config['flag_filter']['enable_retry'] = False
-
     # Find compile_commands.json
     if args.input:
         db_path = Path(args.input)
     else:
-        db_path = find_compile_commands(Path.cwd())
+        try:
+            db_path = find_compile_commands(Path.cwd())
+        except FileNotFoundError as e:
+            logging.error(str(e))
+            return 1
 
-    if not db_path or not db_path.exists():
-        logging.error(f"compile_commands.json not found. Specify with --input")
+    if not db_path.exists():
+        logging.error(f"compile_commands.json not found at {db_path}")
         return 1
 
     try:
-        # Load filter configuration with priority logic
-        project_root = db_path.parent
-        logger = logging.getLogger(__name__)
-
-        filter_loader = FilterConfigLoader(project_root=str(project_root), logger=logger)
-        filter_config = filter_loader.load(
-            filter_cfg_path=args.filter_cfg,
-            single_path=args.path
-        )
-
-        # Validate filter paths (warning only)
-        filter_loader.validate_paths(filter_config)
-
-        # Log filter configuration
-        logging.info(f"Filter mode: {filter_config.mode.name}")
-        logging.info(f"Filter scope: {filter_config.get_scope_summary()}")
-
         # Load compilation database
         logging.info(f"Loading compilation database from {db_path}")
         comp_db = CompilationDatabase(str(db_path))
 
-        # Initialize flag filter manager
-        flag_filter_manager = FlagFilterManager.from_config(config, logger)
-
-        # Apply filter configuration
+        # Get compilation units
         units = comp_db.get_units()
-
-        # Simplify compile_commands when filtering is active
-        simple_db_stats = None
-
-        if filter_config.mode != FilterMode.AUTO_DETECT:
-            logging.info("Creating simplified compile_commands.json for performance optimization")
-
-            # Initialize simplifier
-            simplifier = CompileCommandsSimplifier(
-                filter_paths=filter_config.normalized_paths,
-                logger=logger
-            )
-
-            # Simplify units
-            units, simple_db_stats = simplifier.simplify_units(units)
-
-            # Log summary
-            logging.info("=" * 60)
-            logging.info("SIMPLIFIED COMPILE COMMANDS SUMMARY")
-            logging.info("=" * 60)
-            logging.info(f"Original units: {simple_db_stats['original_units']}")
-            logging.info(f"Kept units: {simple_db_stats['kept_units']}")
-            logging.info(f"Removed units: {simple_db_stats['removed_units']}")
-            logging.info(f"Kept -D flags: {simple_db_stats['kept_D_flags']}")
-            logging.info(f"Kept -I flags: {simple_db_stats['kept_I_flags']}")
-            logging.info(f"Removed -I flags: {simple_db_stats['removed_I_flags']}")
-            logging.info(f"Removed other flags: {simple_db_stats['removed_other_flags']}")
-            logging.info("=" * 60)
-
-            # Dump to file if requested
-            if args.dump_simple_db:
-                simplifier.dump_to_file(units, args.dump_simple_db)
-        elif filter_config.mode != FilterMode.AUTO_DETECT:
-            # Convert CompilationUnit to dict format for filtering
-            compile_commands = [
-                {
-                    'file': unit.file,
-                    'command': unit.command,
-                    'directory': unit.directory
-                }
-                for unit in units
-            ]
-
-            # Filter compilation database
-            db_filter = CompilationDatabaseFilter(
-                filter_config=filter_config,
-                project_root=str(project_root),
-                logger=logger
-            )
-
-            filtered_units = db_filter.filter_compilation_db(compile_commands)
-
-            # Dump filtered DB if requested (before converting to CompilationUnit)
-            if args.dump_filtered_db:
-                db_filter.dump_filtered_db(compile_commands, args.dump_filtered_db)
-
-            # Convert back to CompilationUnit format
-            units = [
-                comp_db._parse_entry({
-                    'file': unit.file,
-                    'command': unit.command,
-                    'directory': unit.directory
-                })
-                for unit in filtered_units
-            ]
-
-            logging.info(db_filter.get_summary())
-        else:
-            logging.info(f"Analyzing all {len(units)} compilation units")
+        logging.info(f"Analyzing {len(units)} compilation units")
 
         # Initialize function registry
         registry = FunctionRegistry()
 
-        # Parse each translation unit
-        for unit in units:
+        # Generate compile_commands_simple.json (always, for performance)
+        logger = logging.getLogger(__name__)
+        logging.info("Generating compile_commands_simple.json for performance optimization")
+        
+        # Read filter paths if --filter-cfg is specified
+        filter_paths = []
+        if args.filter_cfg:
+            filter_paths = read_filter_cfg(args.filter_cfg)
+            logging.info(f"Filtering to {len(filter_paths)} paths from --filter-cfg")
+        
+        # Get project root (directory containing compile_commands.json)
+        project_root = str(db_path.parent)
+        logging.info(f"Project root: {project_root}")
+
+        # Simplify compilation units
+        simplifier = CompileCommandsSimplifier(
+            filter_paths=filter_paths,
+            project_root=project_root,
+            logger=logger
+        )
+        simplified_units, simple_db_stats = simplifier.simplify_units(units)
+        
+        # Log simplification summary
+        logging.info("=" * 60)
+        logging.info("SIMPLIFIED COMPILE COMMANDS SUMMARY")
+        logging.info("=" * 60)
+        logging.info(f"Original units: {simple_db_stats['original_units']}")
+        logging.info(f"Kept units: {simple_db_stats['kept_units']}")
+        logging.info(f"Removed units: {simple_db_stats['removed_units']}")
+        logging.info(f"Kept -D flags: {simple_db_stats['kept_D_flags']}")
+        logging.info(f"Kept -I flags: {simple_db_stats['kept_I_flags']}")
+        logging.info(f"Removed -I flags: {simple_db_stats['removed_I_flags']}")
+        logging.info(f"Removed other flags: {simple_db_stats['removed_other_flags']}")
+        logging.info("=" * 60)
+
+        # Always export simplified DB to compile_commands_simple.json
+        # Use custom path if provided via --simple-db-path
+        simple_db_path = args.simple_db_path if args.simple_db_path else 'compile_commands_simple.json'
+        logging.info(f"Writing compile_commands_simple.json to {simple_db_path}")
+        simplifier.dump_to_file(simplified_units, simple_db_path)
+
+        # Parse with simplified units
+        units_to_parse = simplified_units
+        logging.info(f"Parsing {len(units_to_parse)} simplified compilation units")
+
+        for unit in units_to_parse:
             logging.info(f"Parsing {unit.file}")
             try:
-                # Parse AST with adaptive flag filtering
-                parser = ASTParser(unit.flags, flag_filter_manager)
+                # Parse AST (no adaptive filtering, use all flags)
+                parser = ASTParser(unit.flags)
                 tu = parser.parse_file(unit.file)
 
                 if not tu:
@@ -331,21 +233,12 @@ def main() -> int:
                 if diags:
                     for diag in diags:
                         # Filter out specific diagnostic messages to reduce noise
-                        # - "unknown warning option" (libclang warning about flags)
-                        # - "file not found" (system header warnings)
                         if "unknown warning option" in diag or "file not found" in diag:
                             continue  # Skip these diagnostics
                         logging.debug(f"  {diag}")
 
-                # Prepare filter paths for FunctionExtractor
-                filter_paths = None
-                if filter_config.mode != FilterMode.AUTO_DETECT:
-                    # Convert normalized_paths to List[Path] for FunctionExtractor
-                    filter_paths = [Path(p) for p in filter_config.normalized_paths]
-                    logger.debug(f"Using filter paths: {filter_paths}")
-
-                # Extract functions
-                extractor = FunctionExtractor(tu, filter_paths=filter_paths)
+                # Extract functions (no filter paths)
+                extractor = FunctionExtractor(tu)
                 functions = extractor.extract()
 
                 for func in functions:
@@ -365,71 +258,19 @@ def main() -> int:
         relationship_builder = RelationshipBuilder(registry, call_analyzer)
         relationships = relationship_builder.build()
 
-        # Filter functions by scope if filter is active (post-processing filter)
-        if filter_config.mode != FilterMode.AUTO_DETECT:
-            all_functions = registry.get_all()
+        # Get functions to emit
+        functions_to_emit = registry.get_all()
+        relationships_to_emit = relationships
 
-            # Filter functions: only keep those defined within the filter scope
-            filtered_indices = {i for i, f in enumerate(all_functions)
-                               if filter_config.is_in_scope(f.path, str(project_root))}
-
-            filtered_count = len(all_functions) - len(filtered_indices)
-            logging.info(f"Post-processing filter: kept {len(filtered_indices)}/{len(all_functions)} functions in filter scope")
-            logging.info(f"Filtered out {filtered_count} system/external functions")
-
-            # Create index mapping: old_index -> new_index
-            old_to_new = {old_idx: new_idx
-                           for new_idx, old_idx in enumerate(sorted(filtered_indices))}
-
-            # Filter relationships: only keep edges between filtered functions
-            filtered_relationships = {}
-            for old_idx in filtered_indices:
-                old_parents, old_children = relationships.get(old_idx, ([], []))
-
-                # Filter parents: only keep parents that are also in filtered set
-                filtered_parents = sorted([old_to_new[p] for p in old_parents if p in old_to_new])
-
-                # Filter children: only keep children that are also in filtered set
-                filtered_children = sorted([old_to_new[c] for c in old_children if c in old_to_new])
-
-                new_idx = old_to_new[old_idx]
-                filtered_relationships[new_idx] = (filtered_parents, filtered_children)
-
-            # Filter function list and add index property
-            filtered_functions = []
-            for new_idx, old_idx in enumerate(sorted(filtered_indices)):
-                func = all_functions[old_idx]
-                # Create a copy with index property for ECharts
-                func_with_index = FunctionInfo(
-                    path=func.path,
-                    line_range=func.line_range,
-                    name=func.name,
-                    qualified_name=func.qualified_name,
-                    brief=func.brief,
-                    raw_cursor=func.raw_cursor,  # Include raw_cursor
-                    index=new_idx  # Add index
-                )
-                filtered_functions.append(func_with_index)
-
-            # Use filtered data
-            functions_to_emit = filtered_functions
-            relationships_to_emit = filtered_relationships
-        else:
-            functions_to_emit = registry.get_all()
-            relationships_to_emit = relationships
-
-        # Emit output based on format
-        logger = logging.getLogger(__name__)
-
-        # Determine output paths based on format
+        # Determine output paths
         output_paths = _determine_output_paths(args)
 
         # Generate outputs
-        json_path = None
+        logger = logging.getLogger(__name__)
 
-        # Step 1: Generate JSON first (for html format)
+        # Step 1: Generate JSON first (required for html format)
+        json_path = None
         if args.format == 'html':
-            # Generate JSON file first (HTML will be generated from JSON)
             json_path = Path(str(output_paths.get('json', '/tmp/call_graph_temp.json')))
             logging.info(f"Generating JSON output to {json_path}")
             emitter = JSONEmitter(str(json_path))
@@ -445,37 +286,32 @@ def main() -> int:
 
         # Step 3: Generate HTML (always from JSON file)
         if args.format == 'html':
-            logging.info("Generating ECharts HTML from JSON...")
+            logging.info("Generating file-level HTML graph from JSON...")
             if not json_path:
                 logging.error("JSON path not available for HTML generation")
                 return 1
 
-            # Load JSON to get the correct format
+            # Load JSON
             with open(json_path, 'r', encoding='utf-8') as f:
-                import json as json_lib
                 functions_dict = json_lib.load(f)
 
             # Remove temporary JSON file if it was temporary
-            import os
             if 'call_graph_temp.json' in str(json_path):
                 os.remove(json_path)
                 logging.info(f"Removed temporary JSON file: {json_path}")
 
-            # Generate HTML from JSON
-            echarts_gen = EChartsGenerator(
+            # Generate HTML from JSON using FileGraphGenerator
+            # Only pass functions_dict - FileGraphGenerator rebuilds relationships from it
+            file_gen = FileGraphGenerator(
                 functions=functions_dict,
-                relationships=relationships_to_emit,
                 logger=logger
             )
-            html_content = echarts_gen.generate_html()
+            html_content = file_gen.generate_html()
             write_html_file(html_content, str(output_paths['html']))
             logging.info(f"HTML output: {output_paths.get('html')}")
 
         # Print output files summary
         _print_output_summary(args.format, output_paths)
-
-        # Print filtering summary
-        flag_filter_manager.print_summary()
 
         logging.info("Analysis complete")
         return 0
@@ -509,6 +345,7 @@ def _determine_output_paths(args: argparse.Namespace) -> Dict[str, Path]:
     if args.format == 'json':
         paths['json'] = base_path if base_path.suffix == '.json' else base_path.with_suffix('.json')
     elif args.format == 'html':
+        paths['json'] = base_path.with_suffix('.json')  # Always generate JSON first
         paths['html'] = base_path if base_path.suffix == '.html' else base_path.with_suffix('.html')
     else:
         # Default to JSON
@@ -535,7 +372,8 @@ def _print_output_summary(format_type: str, output_paths: Dict[str, Path]) -> No
 
     if format_type == 'html':
         if output_paths.get('html'):
-            print(f"  HTML:  {output_paths['html']}")
+            print(f"  JSON:  {output_paths.get('json')}")
+            print(f"  HTML:  {output_paths.get('html')}")
 
     print("=" * 50 + "\n")
 
