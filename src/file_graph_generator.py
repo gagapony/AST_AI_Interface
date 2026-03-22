@@ -566,20 +566,29 @@ function setupEventListeners() {
                     # Fallback if function index not found
                     target_line_range = call_info['line_ranges'][0]
 
-                # Format: "source_name ---- @ func_name (start, end) --> target_name"
-                label = f"{source_name} ---- @ {func_name} ({target_line_range[0]}, {target_line_range[1]}) --> {target_name}"
+                # Format: "@ target_func_name (start, end)" - display called function definition
+                # Arrow direction is already shown via edgeSymbol in ECharts config
+                if child_idx in func_index_to_def:
+                    target_func_name = target_func['self']['name']
+                else:
+                    target_func_name = func_name
+                label = f"@ {target_func_name} ({target_line_range[0]}, {target_line_range[1]})"
 
-                # Build tooltip showing all calls
+                # Build tooltip showing all calls with target function definition ranges
                 tooltip_lines = []
-                for i, fn in enumerate(call_info['functions']):
-                    line_range = call_info['line_ranges'][i]
-                    tooltip_lines.append(f"{fn} @ {source_name}({line_range[0]}-{line_range[1]})")
+                for i, child_idx in enumerate(call_info['function_indices']):
+                    if child_idx in func_index_to_def:
+                        target_func = func_index_to_def[child_idx]
+                        target_func_name = target_func['self']['name']
+                        target_line_range = target_func['self']['line']
+                        # Format: "@ func_name (start, end)" - same as edge label
+                        tooltip_lines.append(f"@ {target_func_name} ({target_line_range[0]}, {target_line_range[1]})")
 
                 # Create tooltip HTML
                 tooltip = '<div style="padding: 8px; font-family: Arial, sans-serif; max-width: 400px;">'
                 tooltip += '<strong style="font-size: 14px;">All Calls</strong><br/>'
                 tooltip += f'<span style="color: #666; font-size: 12px;">{source_name} → {target_name}</span><br/>'
-                tooltip += f'<span style="color: #666; font-size: 12px;">Total: {len(call_info["functions"])} calls</span><br/>'
+                tooltip += f'<span style="color: #666; font-size: 12px;">Total: {len(call_info["function_indices"])} calls</span><br/>'
                 tooltip += '<hr/><span style="color: #666; font-size: 12px;">Details:</span><br/>'
                 tooltip += '<br/>'.join([f'• {line}' for line in tooltip_lines])
                 tooltip += '</div>'
