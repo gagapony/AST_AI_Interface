@@ -1,7 +1,0 @@
-[
-  {
-    "directory": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_data",
-    "command": "/usr/bin/c++ -std=c++17 -c simple.cpp",
-    "file": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_data/simple.cpp"
-  }
-]

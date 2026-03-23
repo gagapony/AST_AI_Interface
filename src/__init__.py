@@ -14,5 +14,4 @@ from . import json_emitter
 from . import file_graph_generator
 from . import compile_commands_simplifier
 from . import doxygen_parser
-from . import echarts_generator
 from . import echarts_templates
