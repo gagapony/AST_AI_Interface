@@ -41,8 +41,12 @@ class GraphFilter:
         - Downward: trace callees (functions called, functions they call, etc.)
         - Result: union of both directions (no depth limit)
 
+        Matching strategy (strict):
+        1. Exact match on qualified_name (highest priority)
+        2. Exact match on name (fallback if qualified_name not found)
+
         Args:
-            target_name: qualified_name of target function
+            target_name: function name (exact match on qualified_name or name)
 
         Returns:
             Filtered list of function dictionaries with re-indexed nodes
@@ -50,15 +54,18 @@ class GraphFilter:
         Raises:
             ValueError: If target function not found
         """
-        self.logger.info(f"Filtering graph by function (path slice): {target_name}")
+        self.logger.info(f"Filtering graph by function (exact match): '{target_name}'")
 
-        # 1. Find target function indices
-        target_indices: Optional[List[int]] = self.name_to_indices.get(target_name)
+        # 1. Find matching function
+        matches = self._find_matching_functions(target_name)
 
-        if not target_indices:
+        if not matches:
             raise ValueError(f"Function '{target_name}' not found in graph")
 
-        self.logger.info(f"Found {len(target_indices)} target function(s)")
+        # Use the match (should be exactly one with strict matching)
+        target_indices = [idx for idx, _ in matches]
+        selected_qname = matches[0][1]
+        self.logger.info(f"Found function: {selected_qname}")
 
         # 2. Trace upward (callers) and downward (callees)
         upward_nodes: Set[int] = self._trace_upward(target_indices)
@@ -96,6 +103,35 @@ class GraphFilter:
             idx: int = func['index']
             adjacency[idx] = (func['parents'], func['children'])
         return adjacency
+
+    def _find_matching_functions(self, input_name: str) -> List[Tuple[int, str]]:
+        """
+        Find functions matching input_name with strict two-tier matching.
+
+        Priority:
+        1. Exact match on qualified_name (highest priority)
+        2. Exact match on name (fallback if qualified_name not found)
+
+        Args:
+            input_name: Function name to search for
+
+        Returns:
+            List of (index, qualified_name) tuples
+        """
+        # Pass 1: Exact match on qualified_name
+        for func in self.functions:
+            qname: str = func['self']['qualified_name']
+            if qname == input_name:
+                return [(func['index'], qname)]
+
+        # Pass 2: Exact match on name (fallback)
+        for func in self.functions:
+            name: str = func['self']['name']
+            if name == input_name:
+                return [(func['index'], func['self']['qualified_name'])]
+
+        # No match found
+        return []
 
     def _trace_upward(self, start_indices: List[int]) -> Set[int]:
         """

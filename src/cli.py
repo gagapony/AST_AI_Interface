@@ -87,7 +87,10 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar='FUNCTION',
         help='Filter graph to show only functions reachable from FUNCTION. '
-             'Use qualified_name (e.g., "Namespace::function_name(int, int)"). '
+             'Supports exact match on qualified_name or name. '
+             'Priority: qualified_name > name. '
+             'Example: "print_result" matches name="print_result" or '
+             'qualified_name="print_result::(const char *, int)". '
              'Generates filegraph_<FUNCTION>.json and .html.'
     )
 

@@ -2,11 +2,15 @@
 
 import json
 import logging
+import shutil
 from pathlib import Path
 from string import Template
 from typing import Dict, List, Optional, Tuple, Set, Any
 
 from .echarts_templates import CSS_TEMPLATE
+
+# Path to bundled echarts.min.js
+ECHARTS_SOURCE = Path(__file__).parent / 'echarts.min.js'
 
 
 class FileGraphGenerator:
@@ -19,7 +23,7 @@ class FileGraphGenerator:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>File Call Graph</title>
-  <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+  <script src="./echarts.min.js"></script>
   <style>
 $css
   </style>
@@ -765,19 +769,39 @@ function setupEventListeners() {
 
 def write_html_file(html_content: str, output_path: str) -> None:
     """
-    Write HTML content to file.
+    Write HTML content to file and copy echarts.min.js if available.
 
     Args:
         html_content: Complete HTML string
         output_path: Path to output file
     """
     output_file: Path = Path(output_path)
+    output_dir: Path = output_file.parent
 
     # Create parent directory if it doesn't exist
-    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy echarts.min.js if bundled version exists
+    echarts_dest: Path = output_dir / 'echarts.min.js'
+    if ECHARTS_SOURCE.exists() and not echarts_dest.exists():
+        try:
+            shutil.copy(ECHARTS_SOURCE, echarts_dest)
+            logging.info(f"Copied echarts.min.js to {echarts_dest}")
+        except Exception as e:
+            logging.warning(f"Failed to copy echarts.min.js: {e}")
+    elif not ECHARTS_SOURCE.exists():
+        # Fall back to CDN if echarts.min.js not bundled
+        logging.warning(
+            "echarts.min.js not found in package directory. "
+            "Update HTML to use CDN fallback."
+        )
+        html_content = html_content.replace(
+            './echarts.min.js',
+            'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js'
+        )
 
     # Write HTML to file
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(html_content)
 
-    logging.info(f"File graph HTML written to {output_path}")
+    logging.info(f"File graph HTML written to {output_file}")
