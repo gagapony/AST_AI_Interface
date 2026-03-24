@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Optional, Set, Tuple, Any
 
 from .compilation_db import CompilationDatabase
 from .ast_parser import ASTParser
@@ -80,6 +80,16 @@ def parse_args() -> argparse.Namespace:
              'Default: compile_commands_simple.json in the current directory. '
              'This file contains only -D flags and all -I flags.'
     )
+    # Add --filter-func option for filtering graph by function
+    parser.add_argument(
+        '--filter-func',
+        type=str,
+        default=None,
+        metavar='FUNCTION',
+        help='Filter graph to show only functions reachable from FUNCTION. '
+             'Use qualified_name (e.g., "Namespace::function_name(int, int)"). '
+             'Generates filegraph_<FUNCTION>.json and .html.'
+    )
 
     return parser.parse_args()
 
@@ -101,7 +111,8 @@ def setup_logging(level: str) -> None:
 
 def find_compile_commands(start_dir: Path) -> Path:
     """Search for compile_commands.json in parent directories."""
-    current = start_dir.absolute()
+    current: Path = start_dir.absolute()
+    compile_db: Path
 
     while current != current.parent:
         compile_db = current / 'build' / 'compile_commands.json'
@@ -122,7 +133,7 @@ def find_compile_commands(start_dir: Path) -> Path:
     )
 
 
-def read_filter_cfg(cfg_path: str) -> list:
+def read_filter_cfg(cfg_path: str) -> List[str]:
     """
     Read filter.cfg file and return list of paths.
 
@@ -132,7 +143,8 @@ def read_filter_cfg(cfg_path: str) -> list:
     Returns:
         List of paths (one per line, stripped)
     """
-    paths = []
+    paths: List[str] = []
+    line: str
     with open(cfg_path, 'r') as f:
         for line in f:
             line = line.strip()
@@ -143,10 +155,11 @@ def read_filter_cfg(cfg_path: str) -> list:
 
 def main() -> int:
     """Main entry point."""
-    args = parse_args()
+    args: argparse.Namespace = parse_args()
     setup_logging(args.verbose)
 
     # Find compile_commands.json
+    db_path: Path
     if args.input:
         db_path = Path(args.input)
     else:
@@ -163,37 +176,37 @@ def main() -> int:
     try:
         # Load compilation database
         logging.info(f"Loading compilation database from {db_path}")
-        comp_db = CompilationDatabase(str(db_path))
+        comp_db: CompilationDatabase = CompilationDatabase(str(db_path))
 
         # Get compilation units
-        units = comp_db.get_units()
+        units: List[Any] = comp_db.get_units()
         logging.info(f"Analyzing {len(units)} compilation units")
 
         # Initialize function registry
-        registry = FunctionRegistry()
+        registry: FunctionRegistry = FunctionRegistry()
 
         # Generate compile_commands_simple.json (always, for performance)
-        logger = logging.getLogger(__name__)
+        logger: logging.Logger = logging.getLogger(__name__)
         logging.info("Generating compile_commands_simple.json for performance optimization")
-        
+
         # Read filter paths if --filter-cfg is specified
-        filter_paths = []
+        filter_paths: List[str] = []
         if args.filter_cfg:
             filter_paths = read_filter_cfg(args.filter_cfg)
             logging.info(f"Filtering to {len(filter_paths)} paths from --filter-cfg")
-        
+
         # Get project root (directory containing compile_commands.json)
-        project_root = str(db_path.parent)
+        project_root: str = str(db_path.parent)
         logging.info(f"Project root: {project_root}")
 
         # Simplify compilation units
-        simplifier = CompileCommandsSimplifier(
+        simplifier: CompileCommandsSimplifier = CompileCommandsSimplifier(
             filter_paths=filter_paths,
             project_root=project_root,
             logger=logger
         )
         simplified_units, simple_db_stats = simplifier.simplify_units(units)
-        
+
         # Log simplification summary
         logging.info("=" * 60)
         logging.info("SIMPLIFIED COMPILE COMMANDS SUMMARY")
@@ -209,7 +222,7 @@ def main() -> int:
 
         # Always export simplified DB to compile_commands_simple.json
         # Use custom path if provided via --simple-db-path
-        simple_db_path = args.simple_db_path if args.simple_db_path else 'compile_commands_simple.json'
+        simple_db_path: str = args.simple_db_path if args.simple_db_path else 'compile_commands_simple.json'
         logging.info(f"Writing compile_commands_simple.json to {simple_db_path}")
         simplifier.dump_to_file(simplified_units, simple_db_path)
 
@@ -221,7 +234,7 @@ def main() -> int:
             logging.info(f"Parsing {unit.file}")
             try:
                 # Parse AST (no adaptive filtering, use all flags)
-                parser = ASTParser(unit.flags)
+                parser: ASTParser = ASTParser(unit.flags)
                 tu = parser.parse_file(unit.file)
 
                 if not tu:
@@ -229,7 +242,7 @@ def main() -> int:
                     continue
 
                 # Check for diagnostics
-                diags = parser.get_diagnostics()
+                diags: list[str] = parser.get_diagnostics()
                 if diags:
                     for diag in diags:
                         # Filter out specific diagnostic messages to reduce noise
@@ -238,7 +251,7 @@ def main() -> int:
                         logging.debug(f"  {diag}")
 
                 # Extract functions (no filter paths)
-                extractor = FunctionExtractor(tu)
+                extractor: FunctionExtractor = FunctionExtractor(tu)
                 functions = extractor.extract()
 
                 for func in functions:
@@ -254,8 +267,8 @@ def main() -> int:
 
         # Build call relationships
         logging.info("Building call relationships")
-        call_analyzer = CallAnalyzer(registry)
-        relationship_builder = RelationshipBuilder(registry, call_analyzer)
+        call_analyzer: CallAnalyzer = CallAnalyzer(registry)
+        relationship_builder: RelationshipBuilder = RelationshipBuilder(registry, call_analyzer)
         relationships = relationship_builder.build()
 
         # Get functions to emit
@@ -263,55 +276,78 @@ def main() -> int:
         relationships_to_emit = relationships
 
         # Determine output paths
-        output_paths = _determine_output_paths(args)
+        output_paths: Dict[str, Path] = _determine_output_paths(args)
 
-        # Generate outputs
-        logger = logging.getLogger(__name__)
+        # Step 1: Always generate full filegraph.json
+        json_path: Path = output_paths['json']
+        logging.info(f"Generating JSON output to {json_path}")
+        emitter: JSONEmitter = JSONEmitter(str(json_path))
+        emitter.emit(functions_to_emit, relationships_to_emit)
+        logging.info(f"JSON output: {json_path}")
 
-        # Step 1: Generate JSON first (required for html format)
-        json_path = None
-        if args.format == 'html':
-            json_path = Path(str(output_paths.get('json', '/tmp/call_graph_temp.json')))
-            logging.info(f"Generating JSON output to {json_path}")
-            emitter = JSONEmitter(str(json_path))
-            emitter.emit(functions_to_emit, relationships_to_emit)
-            logging.info(f"JSON generated at {json_path}")
-
-        # Step 2: Generate JSON output for json format
-        if args.format == 'json':
-            logging.info(f"Generating JSON output to {output_paths['json']}")
-            emitter = JSONEmitter(str(output_paths['json']))
-            emitter.emit(functions_to_emit, relationships_to_emit)
-            logging.info(f"JSON output: {output_paths.get('json')}")
-
-        # Step 3: Generate HTML (always from JSON file)
+        # Step 2: Generate filegraph.html if format is html
         if args.format == 'html':
             logging.info("Generating file-level HTML graph from JSON...")
-            if not json_path:
-                logging.error("JSON path not available for HTML generation")
-                return 1
-
-            # Load JSON
             with open(json_path, 'r', encoding='utf-8') as f:
-                functions_dict = json_lib.load(f)
+                functions_dict: List[Dict[str, Any]] = json_lib.load(f)
 
-            # Remove temporary JSON file if it was temporary
-            if 'call_graph_temp.json' in str(json_path):
-                os.remove(json_path)
-                logging.info(f"Removed temporary JSON file: {json_path}")
-
-            # Generate HTML from JSON using FileGraphGenerator
-            # Only pass functions_dict - FileGraphGenerator rebuilds relationships from it
-            file_gen = FileGraphGenerator(
+            file_gen: FileGraphGenerator = FileGraphGenerator(
                 functions=functions_dict,
                 logger=logger
             )
-            html_content = file_gen.generate_html()
+            html_content: str = file_gen.generate_html()
             write_html_file(html_content, str(output_paths['html']))
             logging.info(f"HTML output: {output_paths.get('html')}")
 
+        # Step 3: Apply filter if --filter-func is specified (generates separate files)
+        filter_paths: Optional[Dict[str, Path]] = None
+        if args.filter_func:
+            logging.info(f"Filtering graph by function: {args.filter_func}")
+
+            # Load full graph JSON
+            with open(json_path, 'r', encoding='utf-8') as f:
+                full_functions: List[Dict[str, Any]] = json_lib.load(f)
+
+            # Apply filter
+            from .graph_filter import GraphFilter
+            filter_obj: GraphFilter = GraphFilter(full_functions)
+            try:
+                filtered_functions = filter_obj.filter_by_function(args.filter_func)
+
+                # Generate filtered output files (separate from full graph)
+                # Use the same base name as main output (from -o or default)
+                base_stem: str = json_path.stem
+                filter_base_name: str = _sanitize_function_name(args.filter_func)
+                filter_json_path: Path = Path(f"{base_stem}_{filter_base_name}.json")
+                filter_html_path: Path = filter_json_path.with_suffix('.html')
+
+                logging.info(f"Writing filtered JSON to {filter_json_path}")
+                with open(filter_json_path, 'w', encoding='utf-8') as f:
+                    json_lib.dump(filtered_functions, f, indent=2, ensure_ascii=False)
+
+                # Generate filtered HTML
+                file_gen_filtered: FileGraphGenerator = FileGraphGenerator(
+                    functions=filtered_functions,
+                    target_function=args.filter_func,
+                    logger=logger
+                )
+                html_content_filtered: str = file_gen_filtered.generate_html()
+                write_html_file(html_content_filtered, str(filter_html_path))
+                logging.info(f"Filtered JSON output: {filter_json_path}")
+                logging.info(f"Filtered HTML output: {filter_html_path}")
+
+                # Store filter paths for summary
+                filter_paths = {
+                    'json': filter_json_path,
+                    'html': filter_html_path
+                }
+
+            except ValueError as e:
+                logging.error(str(e))
+                return 1
+
         # Print output files summary
-        _print_output_summary(args.format, output_paths)
+        _print_output_summary(args.format, output_paths, filter_paths)
 
         logging.info("Analysis complete")
         return 0
@@ -333,13 +369,14 @@ def _determine_output_paths(args: argparse.Namespace) -> Dict[str, Path]:
     Returns:
         Dictionary mapping format names to output paths
     """
-    paths = {}
+    paths: Dict[str, Path] = {}
 
-    # Determine base output path
+    # Determine base output path (default: filegraph.json/html)
+    base_path: Path
     if args.output:
         base_path = Path(args.output)
     else:
-        base_path = Path("output")
+        base_path = Path("filegraph")
 
     # Set paths based on format
     if args.format == 'json':
@@ -354,28 +391,62 @@ def _determine_output_paths(args: argparse.Namespace) -> Dict[str, Path]:
     return paths
 
 
-def _print_output_summary(format_type: str, output_paths: Dict[str, Path]) -> None:
+def _print_output_summary(format_type: str, output_paths: Dict[str, Path],
+                         filter_paths: Optional[Dict[str, Path]] = None) -> None:
     """
     Print summary of generated output files.
 
     Args:
         format_type: Output format type (json, html)
         output_paths: Dictionary of output paths
+        filter_paths: Optional dictionary of filtered output paths
     """
     print("\n" + "=" * 50)
     print("Output Generation Complete")
     print("=" * 50)
 
     if format_type == 'json':
-        if output_paths.get('json'):
-            print(f"  JSON:  {output_paths['json']}")
+        json_path: Optional[Path] = output_paths.get('json')
+        if json_path:
+            print(f"  JSON:  {json_path}")
 
     if format_type == 'html':
-        if output_paths.get('html'):
-            print(f"  JSON:  {output_paths.get('json')}")
-            print(f"  HTML:  {output_paths.get('html')}")
+        html_path: Optional[Path] = output_paths.get('html')
+        if html_path:
+            json_path = output_paths.get('json')
+            print(f"  JSON:  {json_path}")
+            print(f"  HTML:  {html_path}")
+
+    # Print filtered files if available
+    if filter_paths:
+        print()
+        print(f"  Filtered files:")
+        filter_json: Optional[Path] = filter_paths.get('json')
+        filter_html: Optional[Path] = filter_paths.get('html')
+        if filter_json:
+            print(f"    JSON:  {filter_json}")
+        if filter_html:
+            print(f"    HTML:  {filter_html}")
 
     print("=" * 50 + "\n")
+
+
+def _sanitize_function_name(func_name: str) -> str:
+    """
+    Sanitize function name for use in filename.
+
+    Args:
+        func_name: Function qualified_name
+
+    Returns:
+        Sanitized string safe for filename
+    """
+    # Replace unsafe characters
+    unsafe: List[str] = ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '(', ')', ',', ' ', '<']
+    sanitized: str = func_name
+    for char in unsafe:
+        sanitized = sanitized.replace(char, '_')
+    return sanitized
 
 
 if __name__ == '__main__':

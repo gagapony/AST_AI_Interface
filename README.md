@@ -96,6 +96,46 @@ See [USAGE.md](USAGE.md) for detailed usage instructions and common issues.
 ]
 ```
 
+## Filtering the Graph
+
+To generate a subgraph containing only functions reachable from a specific function, use the `--filter-func` option:
+
+```bash
+python -m src.cli --filter-func "Namespace::function_name(int, int)" --format html
+```
+
+This generates two files:
+- `filegraph_Namespace__function_name_int__int_.json` - Filtered JSON data
+- `filegraph_Namespace__function_name_int__int_.html` - Interactive HTML visualization
+
+The subgraph includes:
+- The target function
+- All functions that call the target function (upward traversal)
+- All functions called by the target function (downward traversal)
+- All functions reachable through these connections (recursive)
+
+### Example
+
+```bash
+# Analyze code with a filter on main function
+python -m src.cli -i compile_commands.json --filter-func "main" --format html
+
+# Output files:
+# - filegraph_main.json
+# - filegraph_main.html
+```
+
+In the HTML visualization, the target function is highlighted in red to make it easy to identify.
+
+### Notes
+
+- Use the full qualified name (namespace included, parameter types for overloads)
+- The filtering is bidirectional: includes both callers and callees
+- Backward compatible: omitting `--filter-func` generates the full graph
+- Can be combined with `--filter-cfg` for path-based filtering
+
+See [USAGE.md](USAGE.md) for more advanced usage examples.
+
 ## Development
 
 ### Running Tests

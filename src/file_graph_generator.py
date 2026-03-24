@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 from string import Template
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Dict, List, Optional, Tuple, Set, Any
 
 from .echarts_templates import CSS_TEMPLATE
 
@@ -73,6 +73,37 @@ function initGraph() {
   visibleNodes = [...originalNodes];
   visibleEdges = [...originalEdges];
 
+  // Get node colors based on categories and target status
+  function getNodeColor(node) {
+    if (node.isTarget) {
+      return '#ff0000';  // Red for target
+    }
+    if (node.category) {
+      const colorMap = {
+        'Control': '#ff7f0e',
+        'Network': '#2ca02c',
+        'Data': '#1f77b4',
+        'Utility': '#9467bd',
+        'System': '#d62728',
+        'Default': '#7f7f7f'
+      };
+      return colorMap[node.category] || '#7f7f7f';
+    }
+    return '#7f7f7f';
+  }
+
+  // Apply styling to nodes
+  const styledNodes = visibleNodes.map(node => ({
+    ...node,
+    itemStyle: node.isTarget ? {
+      color: '#ff0000',
+      borderColor: '#000000',
+      borderWidth: 3
+    } : {
+      color: getNodeColor(node)
+    }
+  }));
+
   const option = {
     title: {
       text: 'File Call Graph',
@@ -85,7 +116,7 @@ function initGraph() {
     series: [{
       type: 'graph',
       layout: 'force',
-      data: visibleNodes,
+      data: styledNodes,
       links: visibleEdges,
       categories: GRAPH_DATA.categories,
       roam: true,
@@ -310,25 +341,31 @@ function setupEventListeners() {
 """
 
     def __init__(self,
-                 functions: List[Dict],
-                 logger: Optional[logging.Logger] = None):
+                 functions: List[Dict[str, Any]],
+                 target_function: Optional[str] = None,
+                 logger: Optional[logging.Logger] = None) -> None:
         """
         Initialize file graph generator.
 
         Args:
             functions: List of function dictionaries from JSON output
                        Each function should have 'parents' and 'children' fields
+            target_function: Optional qualified_name of target function to highlight
             logger: Optional logger instance
         """
-        self.functions = functions
-        self.logger = logger or logging.getLogger(__name__)
+        self.functions: List[Dict[str, Any]] = functions
+        self.target_function: Optional[str] = target_function
+        self.logger: logging.Logger = logger or logging.getLogger(__name__)
 
         # Rebuild relationships from functions data
         # Each function has 'parents' and 'children' fields from JSON
-        self.relationships = {
+        self.relationships: Dict[int, Tuple[List[int], List[int]]] = {
             func['index']: (func['parents'], func['children'])
             for func in functions
         }
+
+        # Build function name map for target function lookup
+        self.name_map: Dict[str, Dict[str, Any]] = {func['self']['qualified_name']: func for func in functions}
 
     def generate_html(self) -> str:
         """
@@ -338,16 +375,16 @@ function setupEventListeners() {
             Complete HTML string
         """
         # Transform data to file-level ECharts format
-        echarts_data = self._transform_to_file_graph()
+        echarts_data: Dict[str, Any] = self._transform_to_file_graph()
 
         # Serialize data for embedding
-        data_json = json.dumps(echarts_data, ensure_ascii=False, indent=2)
+        data_json: str = json.dumps(echarts_data, ensure_ascii=False, indent=2)
 
         # Use Template to avoid brace escaping issues
-        template = Template(self.HTML_TEMPLATE)
+        template: Template = Template(self.HTML_TEMPLATE)
 
         # Generate HTML
-        html = template.substitute(
+        html: str = template.substitute(
             css=CSS_TEMPLATE,
             data=data_json,
             app_script=self.APP_SCRIPT_TEMPLATE
@@ -355,7 +392,7 @@ function setupEventListeners() {
 
         return html
 
-    def _transform_to_file_graph(self) -> Dict:
+    def _transform_to_file_graph(self) -> Dict[str, Any]:
         """
         Transform function data to file-level ECharts graph format.
 
@@ -365,16 +402,16 @@ function setupEventListeners() {
         self.logger.info("Transforming to file-level graph...")
 
         # Step 1: Aggregate functions by file
-        file_functions = self._aggregate_by_file()
+        file_functions: Dict[str, List[Dict[str, Any]]] = self._aggregate_by_file()
 
         # Step 2: Build file-to-file call relationships
-        file_relationships = self._build_file_relationships(file_functions, self.functions)
+        file_relationships: Dict[str, Dict[str, Any]] = self._build_file_relationships(file_functions, self.functions)
 
         # Step 3: Create file nodes
-        nodes = self._create_file_nodes(file_functions, file_relationships)
+        nodes: List[Dict[str, Any]] = self._create_file_nodes(file_functions, file_relationships)
 
         # Step 4: Create file edges with labels
-        edges = self._create_file_edges(file_relationships)
+        edges: List[Dict[str, Any]] = self._create_file_edges(file_relationships)
 
         # Step 5: Assign categories
         nodes = self._assign_categories(nodes)
@@ -383,7 +420,7 @@ function setupEventListeners() {
         nodes = self._calculate_sizes(nodes)
 
         # Get category definitions
-        categories = self._get_categories()
+        categories: List[Dict[str, Any]] = self._get_categories()
 
         self.logger.info(f"Transformed {len(nodes)} file nodes and {len(edges)} file edges")
 
@@ -393,17 +430,17 @@ function setupEventListeners() {
             'categories': categories
         }
 
-    def _aggregate_by_file(self) -> Dict[str, List[Dict]]:
+    def _aggregate_by_file(self) -> Dict[str, List[Dict[str, Any]]]:
         """
         Aggregate functions by file path.
 
         Returns:
             Dictionary mapping file path to list of functions
         """
-        file_functions = {}
+        file_functions: Dict[str, List[Dict[str, Any]]] = {}
 
         for func in self.functions:
-            file_path = func['self']['path']
+            file_path: str = func['self']['path']
             if file_path not in file_functions:
                 file_functions[file_path] = []
             file_functions[file_path].append(func)
@@ -412,8 +449,8 @@ function setupEventListeners() {
         return file_functions
 
     def _build_file_relationships(self,
-                                   file_functions: Dict[str, List[Dict]],
-                                   functions: List[Dict]) -> Dict[str, Dict]:
+                                   file_functions: Dict[str, List[Dict[str, Any]]],
+                                   functions: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         """
         Build file-to-file call relationships.
 
@@ -424,7 +461,7 @@ function setupEventListeners() {
         Returns:
             Dictionary mapping file paths to relationship info
         """
-        file_relationships = {}
+        file_relationships: Dict[str, Dict[str, Any]] = {}
 
         # Initialize relationship tracking for each file
         for file_path in file_functions:
@@ -435,23 +472,25 @@ function setupEventListeners() {
             }
 
         # Build a map from function index to file path
-        func_index_to_file = {}
+        func_index_to_file: Dict[int, str] = {}
         for func in functions:
             func_index_to_file[func['index']] = func['self']['path']
 
         # Process each function's calls
         for func in functions:
-            func_idx = func['index']
-            source_file = func['self']['path']
-            func_name = func['self']['name']
-            line_range = func['self']['line']  # Tuple of (start, end)
+            func_idx: int = func['index']
+            source_file: str = func['self']['path']
+            func_name: str = func['self']['name']
+            line_range: Tuple[int, int] = func['self']['line']  # Tuple of (start, end)
 
             # Get children (functions this function calls)
+            parents: List[int]
+            children: List[int]
             parents, children = self.relationships.get(func_idx, ([], []))
 
             for child_idx in children:
                 if child_idx in func_index_to_file:
-                    target_file = func_index_to_file[child_idx]
+                    target_file: str = func_index_to_file[child_idx]
 
                     # Skip calls within the same file
                     if target_file == source_file:
@@ -482,8 +521,8 @@ function setupEventListeners() {
         return file_relationships
 
     def _create_file_nodes(self,
-                            file_functions: Dict[str, List[Dict]],
-                            file_relationships: Dict[str, Dict]) -> List[Dict]:
+                            file_functions: Dict[str, List[Dict[str, Any]]],
+                            file_relationships: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Create file nodes.
 
@@ -494,32 +533,41 @@ function setupEventListeners() {
         Returns:
             List of file node dictionaries
         """
-        nodes = []
-        file_id = 0
+        nodes: List[Dict[str, Any]] = []
+        file_id: int = 0
 
         for file_path, funcs in file_functions.items():
-            file_name = Path(file_path).name
+            file_name: str = Path(file_path).name
 
             # Get relationship counts
-            outgoing_count = len(file_relationships[file_path]['outgoing'])
-            incoming_count = len(file_relationships[file_path]['incoming'])
+            outgoing_count: int = len(file_relationships[file_path]['outgoing'])
+            incoming_count: int = len(file_relationships[file_path]['incoming'])
 
             # Build call details for tooltip
-            call_details = []
+            call_details: List[str] = []
             for target_file, info in file_relationships[file_path]['outgoing'].items():
-                target_name = Path(target_file).name
-                func_name = info['functions'][0]
-                line_range = info['line_ranges'][0]  # First call's line_range
+                target_name: str = Path(target_file).name
+                func_name: str = info['functions'][0]
+                line_range: Tuple[int, int] = info['line_ranges'][0]  # First call's line_range
                 call_details.append(f"→ {target_name}: {func_name} @ {line_range[0]}-{line_range[1]}")
 
-            node = {
+            # Check if target function is in this file
+            is_target_file: bool = False
+            if self.target_function:
+                for func in funcs:
+                    if func['self']['qualified_name'] == self.target_function:
+                        is_target_file = True
+                        break
+
+            node: Dict[str, Any] = {
                 'id': file_id,
                 'name': file_name,
                 'path': file_path,
                 'functionCount': file_relationships[file_path]['function_count'],
                 'outgoingCount': outgoing_count,
                 'incomingCount': incoming_count,
-                'callDetails': '<br/>'.join(call_details) if call_details else ''
+                'callDetails': '<br/>'.join(call_details) if call_details else '',
+                'isTarget': is_target_file
             }
 
             nodes.append(node)
@@ -527,7 +575,7 @@ function setupEventListeners() {
 
         return nodes
 
-    def _create_file_edges(self, file_relationships: Dict[str, Dict]) -> List[Dict]:
+    def _create_file_edges(self, file_relationships: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Create file edges with call labels.
 
@@ -537,13 +585,13 @@ function setupEventListeners() {
         Returns:
             List of edge dictionaries
         """
-        edges = []
+        edges: List[Dict[str, Any]] = []
 
         # Build a map from function index to function definition for quick lookup
-        func_index_to_def = {func['index']: func for func in self.functions}
+        func_index_to_def: Dict[int, Dict[str, Any]] = {func['index']: func for func in self.functions}
 
         # Create file path to node ID mapping
-        file_to_id = {}
+        file_to_id: Dict[str, int] = {}
         for file_path in file_relationships:
             file_to_id[file_path] = len(file_to_id)
 
@@ -551,16 +599,18 @@ function setupEventListeners() {
         for source_file, rels in file_relationships.items():
             for target_file, call_info in rels['outgoing'].items():
                 # Get source and target file names
-                source_name = Path(source_file).name
-                target_name = Path(target_file).name
+                source_name: str = Path(source_file).name
+                target_name: str = Path(target_file).name
 
                 # Get first function name and child function index
-                func_name = call_info['functions'][0]
-                child_idx = call_info['function_indices'][0]
+                func_name: str = call_info['functions'][0]
+                child_idx: int = call_info['function_indices'][0]
 
                 # Get target function definition and its line range
+                target_line_range: Tuple[int, int]
+                target_func_name: str
                 if child_idx in func_index_to_def:
-                    target_func = func_index_to_def[child_idx]
+                    target_func: Dict[str, Any] = func_index_to_def[child_idx]
                     target_line_range = target_func['self']['line']
                 else:
                     # Fallback if function index not found
@@ -572,20 +622,20 @@ function setupEventListeners() {
                     target_func_name = target_func['self']['name']
                 else:
                     target_func_name = func_name
-                label = f"@ {target_func_name} ({target_line_range[0]}, {target_line_range[1]})"
+                label: str = f"@ {target_func_name} ({target_line_range[0]}, {target_line_range[1]})"
 
                 # Build tooltip showing all calls with target function definition ranges
-                tooltip_lines = []
+                tooltip_lines: List[str] = []
                 for i, child_idx in enumerate(call_info['function_indices']):
                     if child_idx in func_index_to_def:
-                        target_func = func_index_to_def[child_idx]
-                        target_func_name = target_func['self']['name']
-                        target_line_range = target_func['self']['line']
+                        loop_target_func: Dict[str, Any] = func_index_to_def[child_idx]
+                        loop_target_func_name: str = loop_target_func['self']['name']
+                        loop_target_line_range: Tuple[int, int] = loop_target_func['self']['line']
                         # Format: "@ func_name (start, end)" - same as edge label
-                        tooltip_lines.append(f"@ {target_func_name} ({target_line_range[0]}, {target_line_range[1]})")
+                        tooltip_lines.append(f"@ {loop_target_func_name} ({loop_target_line_range[0]}, {loop_target_line_range[1]})")
 
                 # Create tooltip HTML
-                tooltip = '<div style="padding: 8px; font-family: Arial, sans-serif; max-width: 400px;">'
+                tooltip: str = '<div style="padding: 8px; font-family: Arial, sans-serif; max-width: 400px;">'
                 tooltip += '<strong style="font-size: 14px;">All Calls</strong><br/>'
                 tooltip += f'<span style="color: #666; font-size: 12px;">{source_name} → {target_name}</span><br/>'
                 tooltip += f'<span style="color: #666; font-size: 12px;">Total: {len(call_info["function_indices"])} calls</span><br/>'
@@ -593,7 +643,7 @@ function setupEventListeners() {
                 tooltip += '<br/>'.join([f'• {line}' for line in tooltip_lines])
                 tooltip += '</div>'
 
-                edge = {
+                edge: Dict[str, Any] = {
                     'source': file_to_id[source_file],
                     'target': file_to_id[target_file],
                     'label': label,
@@ -610,7 +660,7 @@ function setupEventListeners() {
         self.logger.debug(f"Created {len(edges)} file edges")
         return edges
 
-    def _assign_categories(self, nodes: List[Dict]) -> List[Dict]:
+    def _assign_categories(self, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Assign categories to nodes based on file path.
 
@@ -635,7 +685,7 @@ function setupEventListeners() {
         Returns:
             Category name
         """
-        path_lower = file_path.lower()
+        path_lower: str = file_path.lower()
 
         if '/control/' in path_lower or 'control' in path_lower:
             return 'Control'
@@ -650,7 +700,7 @@ function setupEventListeners() {
         else:
             return 'Default'
 
-    def _calculate_sizes(self, nodes: List[Dict]) -> List[Dict]:
+    def _calculate_sizes(self, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Calculate symbol sizes for nodes based on function count.
 
@@ -664,26 +714,26 @@ function setupEventListeners() {
             return nodes
 
         # Find maximum function count
-        max_functions = max(node['functionCount'] for node in nodes)
+        max_functions: int = max(node['functionCount'] for node in nodes)
 
         if max_functions == 0:
             max_functions = 1  # Avoid division by zero
 
         # Calculate sizes: range 30-80 based on function count
         for node in nodes:
-            ratio = node['functionCount'] / max_functions
+            ratio: float = node['functionCount'] / max_functions
             node['symbolSize'] = int(30 + ratio * 50)
 
         return nodes
 
-    def _get_categories(self) -> List[Dict]:
+    def _get_categories(self) -> List[Dict[str, Any]]:
         """
         Get category definitions for ECharts.
 
         Returns:
             List of category dictionaries
         """
-        categories = [
+        categories: List[Dict[str, Any]] = [
             {
                 'name': 'Control',
                 'itemStyle': {'color': '#ff7f0e'}
@@ -721,7 +771,7 @@ def write_html_file(html_content: str, output_path: str) -> None:
         html_content: Complete HTML string
         output_path: Path to output file
     """
-    output_file = Path(output_path)
+    output_file: Path = Path(output_path)
 
     # Create parent directory if it doesn't exist
     output_file.parent.mkdir(parents=True, exist_ok=True)

@@ -98,8 +98,8 @@ class FunctionExtractor:
         if not location.file:
             return False
 
-        # Skip system headers (use correct libclang API)
-        if location.is_in_system_header:
+        # Skip system headers - check cursor attribute, not location
+        if hasattr(cursor, 'is_in_system_header') and cursor.is_in_system_header:
             return False
 
         return True
