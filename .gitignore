@@ -1,0 +1,8 @@
+
+.direnv/
+.mypy_cache/
+.pytest_cache/
+**/__pycache__/
+compile_commands*
+echarts.min.js
+test*
