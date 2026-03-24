@@ -4,7 +4,7 @@ import json
 import logging
 import shlex
 from pathlib import Path
-from typing import List, NamedTuple
+from typing import List, NamedTuple, Optional, Tuple
 
 
 class CompilationUnit(NamedTuple):
@@ -25,7 +25,7 @@ class CompilationDatabase:
 
         self._load()
 
-    def _load(self):
+    def _load(self) -> None:
         """Load and parse compile_commands.json."""
         try:
             with open(self.db_path, 'r', encoding='utf-8') as f:
@@ -34,7 +34,15 @@ class CompilationDatabase:
             if not isinstance(data, list):
                 raise ValueError("compile_commands.json must be a list")
 
-            self.entries = [self._parse_entry(entry) for entry in data]
+            self.entries = []
+            for entry in data:
+                try:
+                    unit = self._parse_entry(entry)
+                    if unit is not None:
+                        self.entries.append(unit)
+                except Exception as e:
+                    logging.warning(f"Failed to parse entry {entry.get('file', 'unknown')}: {e}")
+                    continue
 
             logging.info(f"Loaded {len(self.entries)} compilation units")
 
@@ -42,10 +50,16 @@ class CompilationDatabase:
             logging.error(f"Failed to load compile_commands.json: {e}")
             raise
 
-    def _parse_entry(self, entry: dict) -> CompilationUnit:
-        """Parse a single compile_commands.json entry."""
+    def _parse_entry(self, entry: dict) -> Optional[CompilationUnit]:
+        """Parse a single compile_commands.json entry.
+
+        Args:
+            entry: Dictionary containing compilation database entry
+
+        Returns:
+            CompilationUnit if successful, None if entry should be skipped
+        """
         directory = entry.get('directory', '')
-        command = entry.get('command', '')
         raw_file_path = entry.get('file', '')
 
         if not raw_file_path:
@@ -61,7 +75,22 @@ class CompilationDatabase:
                 raise ValueError("Relative file path requires 'directory' field")
             file_path = str(Path(directory) / raw_file_path)
 
-        flags = self._extract_flags(command, directory)
+        # Handle both 'arguments' and 'command' fields
+        arguments = entry.get('arguments')
+        command = entry.get('command', '')
+
+        if arguments is not None:
+            # arguments has priority over command
+            if not isinstance(arguments, list):
+                logging.warning(f"Invalid 'arguments' type (expected list): {type(arguments)} for file {file_path}")
+                return None
+            command, flags = self._extract_from_arguments(arguments, directory)
+        elif command:
+            # Use command field (backward compatibility)
+            flags = self._extract_flags(command, directory)
+        else:
+            logging.warning(f"Entry missing both 'arguments' and 'command' fields: {file_path}")
+            return None
 
         return CompilationUnit(
             directory=directory,
@@ -72,48 +101,25 @@ class CompilationDatabase:
 
     def _extract_flags(self, command: str, directory: str) -> List[str]:
         """
-        Extract compiler flags from compile command.
+        Extract -D and -I compiler flags from compile command.
 
-        Note: This method extracts all flags without filtering.
-        Filtering is handled by FlagFilterManager later.
+        Only extracts -D (macro definitions) and -I (include paths) flags.
+        All other flags are skipped as they will be filtered out later.
+
+        Args:
+            command: Compile command string
+            directory: Working directory for resolving relative paths
+
+        Returns:
+            List of -D and -I flags
         """
         # Use shlex.split to handle quoted arguments correctly
         tokens = shlex.split(command)
         flags = []
 
-        # Skip compiler executable and output files
         i = 0
         while i < len(tokens):
             token = tokens[i]
-
-            # Skip compiler executable
-            if token.endswith('++') or token.endswith('gcc') or token.endswith('clang'):
-                i += 1
-                continue
-
-            # Skip output file option
-            if token == '-o':
-                if i + 1 < len(tokens):
-                    i += 2
-                    continue
-                else:
-                    i += 1
-                    continue
-
-            # Skip if it's an output file
-            if token.startswith('-o'):
-                i += 1
-                continue
-
-            # Skip source files
-            if token.endswith(('.c', '.cpp', '.cc', '.cxx', '.C', '.h', '.hpp', '.hh', '.hxx')):
-                i += 1
-                continue
-
-            # Skip object files and build artifacts
-            if token.endswith('.o') or '.pio/build/' in token:
-                i += 1
-                continue
 
             # Include paths (handle both -Ipath and -I path formats)
             if token.startswith('-I'):
@@ -135,26 +141,6 @@ class CompilationDatabase:
                     i += 1
                 continue
 
-            # System include directories (handle both -isystempath and -isystem path formats)
-            if token.startswith('-isystem'):
-                if token == '-isystem' and i + 1 < len(tokens):
-                    # -isystem path format
-                    path = tokens[i + 1]
-                    if not Path(path).is_absolute():
-                        path = str(Path(directory) / path)
-                    flags.extend(['-isystem', path])
-                    i += 2
-                elif len(token) > 9:
-                    # -isystempath format
-                    path = token[9:]
-                    if not Path(path).is_absolute():
-                        path = str(Path(directory) / path)
-                    flags.append(f'-isystem{path}')
-                    i += 1
-                else:
-                    i += 1
-                continue
-
             # Define macros (handle both -DNAME and -D NAME formats)
             if token.startswith('-D'):
                 if token == '-D' and i + 1 < len(tokens):
@@ -167,23 +153,69 @@ class CompilationDatabase:
                     i += 1
                 continue
 
-            # Undefine macros (handle both -UNAME and -U NAME formats)
-            if token.startswith('-U'):
-                if token == '-U' and i + 1 < len(tokens):
-                    flags.extend(['-U', tokens[i + 1]])
-                    i += 2
-                elif len(token) > 2:
-                    flags.append(token)
-                    i += 1
-                else:
-                    i += 1
-                continue
-
-            # Keep all other flags as-is (filtering will happen later)
-            flags.append(token)
+            # Skip everything else
             i += 1
 
         return flags
+
+    def _extract_from_arguments(self, arguments: List[str], directory: str) -> Tuple[str, List[str]]:
+        """
+        Extract command string and -D/-I flags from arguments array.
+
+        Only extracts -D (macro definitions) and -I (include paths) flags.
+        All other flags are skipped as they will be filtered out later.
+
+        Args:
+            arguments: List of command-line arguments
+            directory: Working directory for resolving relative paths
+
+        Returns:
+            Tuple of (command_string, flags_list)
+
+        Raises:
+            ValueError: If arguments list is empty
+        """
+        if not arguments:
+            raise ValueError("Empty arguments list")
+
+        # First argument is the compiler executable
+        compiler = arguments[0]
+
+        flags = []
+        i = 1  # Skip compiler
+
+        while i < len(arguments):
+            arg = arguments[i]
+
+            # Include paths (handle both -Ipath and -I path formats)
+            if arg == '-I' and i + 1 < len(arguments):
+                path = arguments[i + 1]
+                if not Path(path).is_absolute():
+                    path = str(Path(directory) / path)
+                flags.extend(['-I', path])
+                i += 2
+            elif arg.startswith('-I') and len(arg) > 2:
+                path = arg[2:]
+                if not Path(path).is_absolute():
+                    path = str(Path(directory) / path)
+                flags.append(f'-I{path}')
+                i += 1
+            # Define macros (handle both -DNAME and -D NAME formats)
+            elif arg == '-D' and i + 1 < len(arguments):
+                flags.extend(['-D', arguments[i + 1]])
+                i += 2
+            elif arg.startswith('-D') and len(arg) > 2:
+                flags.append(arg)
+                i += 1
+            # Skip everything else
+            else:
+                i += 1
+
+        # Reconstruct command string
+        command = ' '.join([compiler] + flags)
+        # We'll add the source file later during output
+
+        return command, flags
 
     def get_units(self) -> List[CompilationUnit]:
         """Return all compilation units."""
