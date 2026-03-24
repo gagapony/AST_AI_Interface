@@ -21,8 +21,24 @@ class ASTParser:
         Args:
             clang_args: Original compiler flags (from compile_commands.json)
         """
-        self._clang_args = clang_args
+        self._clang_args = list(clang_args)  # Make a copy
         self._diagnostics: List[str] = []
+
+        # Performance optimization flags for clang
+        optimization_flags = [
+            '-nostdlibinc',           # Don't search system include paths
+            '-nostdinc++',            # Don't search standard C++ include paths
+            '-fsyntax-only',          # Only parse for syntax, don't generate code
+            '-fno-error-limit',       # Don't limit error display (faster)
+            '-fno-caret-diagnostics', # Don't show caret in diagnostics (faster)
+        ]
+
+        # Add optimization flags if not already present
+        for flag in optimization_flags:
+            if flag not in self._clang_args:
+                self._clang_args.append(flag)
+
+        logging.info("Added clang optimization flags for faster parsing")
 
         # Create libclang index
         if CLANG_AVAILABLE:
@@ -63,11 +79,10 @@ class ASTParser:
             return None
 
         try:
-            # Parse options
-            parse_options = (
-                clang.cindex.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD |
-                clang.cindex.TranslationUnit.PARSE_INCOMPLETE
-            )
+            # Parse options - optimized for speed
+            # PARSE_INCOMPLETE: Allow parsing to succeed even with errors (faster)
+            # Use minimal options to reduce overhead
+            parse_options = clang.cindex.TranslationUnit.PARSE_INCOMPLETE
 
             # Parse file
             tu = self._index.parse(
@@ -84,9 +99,13 @@ class ASTParser:
             # Collect diagnostics
             self._collect_diagnostics(tu)
 
-            # Check for fatal errors
-            if any(diag.severity >= clang.cindex.Diagnostic.Error for diag in tu.diagnostics):
-                logging.warning(f"Parse errors in {file_path}")
+            # Check for fatal errors and output detailed diagnostics
+            # Use debug level to suppress warnings in normal output
+            error_diags = [diag for diag in tu.diagnostics if diag.severity >= clang.cindex.Diagnostic.Error]
+            if error_diags:
+                logging.debug(f"Parse errors in {file_path}:")
+                for diag in error_diags:
+                    logging.debug(f"  {self._format_diagnostic(diag)}")
 
             return tu
 

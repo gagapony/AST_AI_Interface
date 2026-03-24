@@ -2,8 +2,8 @@
 
 __version__ = '1.0.0'
 
-# Re-export all modules
-from . import cli
+# Re-export all modules (except cli to avoid circular import warnings when using as module)
+# from . import cli
 from . import compilation_db
 from . import ast_parser
 from . import function_extractor
