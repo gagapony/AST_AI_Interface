@@ -2,7 +2,13 @@
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    try:
+        import clang.cindex  # type: ignore
+    except ImportError:
+        pass
 
 try:
     import clang.cindex
@@ -21,7 +27,7 @@ class FunctionInfo:
     name: str
     qualified_name: str
     brief: Optional[str]
-    raw_cursor: Optional = None  # Use Optional when clang not available
+    raw_cursor: Optional['clang.cindex.Cursor'] = None  # Use Optional when clang not available
     index: Optional[int] = None  # ECharts requires index
 
 
@@ -38,7 +44,7 @@ class FunctionExtractor:
             clang.cindex.CursorKind.CONVERSION_FUNCTION,
         }
 
-    def __init__(self, tu):
+    def __init__(self, tu: 'clang.cindex.TranslationUnit') -> None:
         """
         Initialize extractor with a translation unit.
 
@@ -72,7 +78,7 @@ class FunctionExtractor:
         self._logger.debug(f"Extracted {len(functions)} functions")
         return functions
 
-    def _is_function_definition(self, cursor) -> bool:
+    def _is_function_definition(self, cursor: 'clang.cindex.Cursor') -> bool:
         """
         Check if cursor is a function definition (not just declaration).
 
@@ -104,7 +110,7 @@ class FunctionExtractor:
 
         return True
 
-    def _extract_info(self, cursor) -> Optional[FunctionInfo]:
+    def _extract_info(self, cursor: 'clang.cindex.Cursor') -> Optional[FunctionInfo]:
         """
         Extract function information from a cursor.
 
@@ -138,7 +144,7 @@ class FunctionExtractor:
             raw_cursor=cursor
         )
 
-    def _get_qualified_name(self, cursor) -> str:
+    def _get_qualified_name(self, cursor: 'clang.cindex.Cursor') -> str:
         """
         Build fully qualified name including namespace/class scope.
 
@@ -168,7 +174,7 @@ class FunctionExtractor:
 
         return "::".join(parts)
 
-    def _collect_scope(self, cursor) -> str:
+    def _collect_scope(self, cursor: 'clang.cindex.Cursor') -> str:
         """
         Collect namespace and class scope.
 
@@ -181,7 +187,7 @@ class FunctionExtractor:
         if not CLANG_AVAILABLE:
             return ""
 
-        scope_parts = []
+        scope_parts: List[str] = []
         parent = cursor.semantic_parent
 
         while parent:
@@ -203,7 +209,7 @@ class FunctionExtractor:
 
         return "::".join(scope_parts)
 
-    def _get_parameters(self, cursor) -> str:
+    def _get_parameters(self, cursor: 'clang.cindex.Cursor') -> str:
         """
         Get parameter types as a comma-separated string.
 
@@ -222,7 +228,7 @@ class FunctionExtractor:
             params.append(param_type)
         return ", ".join(params)
 
-    def _get_line_range(self, cursor) -> Tuple[int, int]:
+    def _get_line_range(self, cursor: 'clang.cindex.Cursor') -> Tuple[int, int]:
         """
         Get start and end line numbers.
 
@@ -240,7 +246,7 @@ class FunctionExtractor:
         end = extent.end.line
         return (start, end)
 
-    def _get_brief(self, cursor) -> Optional[str]:
+    def _get_brief(self, cursor: 'clang.cindex.Cursor') -> Optional[str]:
         """
         Extract Doxygen brief from cursor's raw comment.
 
@@ -256,5 +262,5 @@ class FunctionExtractor:
             return None
 
         # Parse with DoxygenParser
-        parser = DoxygenParser()
+        parser: DoxygenParser = DoxygenParser()
         return parser.parse(raw_comment)

@@ -18,6 +18,7 @@ from .relationship_builder import RelationshipBuilder
 from .json_emitter import JSONEmitter
 from .file_graph_generator import FileGraphGenerator, write_html_file
 from .compile_commands_simplifier import CompileCommandsSimplifier
+from .feature_analyzer import FeatureAnalyzer, FeatureRegistry
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,6 +93,25 @@ def parse_args() -> argparse.Namespace:
              'Example: "print_result" matches name="print_result" or '
              'qualified_name="print_result::(const char *, int)". '
              'Generates filegraph_<FUNCTION>.json and .html.'
+    )
+    # Add advanced feature flags
+    parser.add_argument(
+        '--analyze-macros',
+        action='store_true',
+        help='Analyze macro invocations as potential function calls. '
+             'Macro calls are marked with "type": "macro" in the output.'
+    )
+    parser.add_argument(
+        '--analyze-pointers',
+        action='store_true',
+        help='Analyze function pointer calls. '
+             'Indirect calls are marked with "type": "indirect" and include possible targets.'
+    )
+    parser.add_argument(
+        '--analyze-virtual',
+        action='store_true',
+        help='Analyze virtual function calls. '
+             'Virtual calls are marked with "type": "virtual" and include possible targets.'
     )
 
     return parser.parse_args()
@@ -268,9 +288,73 @@ def main() -> int:
 
         logging.info(f"Total functions found: {registry.count()}")
 
+        # Build feature registry if any advanced features are enabled
+        feature_registry: Optional[Any] = None
+        if args.analyze_macros or args.analyze_pointers or args.analyze_virtual:
+            logging.info("Initializing feature analyzer...")
+            feature_registry = FeatureRegistry()
+
+            # Process each translation unit to extract features
+            for unit in units_to_parse:
+                logging.debug(f"Extracting features from {unit.file}")
+                try:
+                    feature_parser: ASTParser = ASTParser(unit.flags)
+                    tu = feature_parser.parse_file(unit.file)
+
+                    if not tu:
+                        continue
+
+                    # Extract features based on flags
+                    analyzer = FeatureAnalyzer(tu, registry)
+
+                    if args.analyze_macros:
+                        analyzer.extract_macros()
+                        logging.debug(f"  Extracted macro definitions from {unit.file}")
+
+                    if args.analyze_pointers:
+                        analyzer.extract_function_pointers()
+                        logging.debug(f"  Extracted function pointers from {unit.file}")
+
+                    if args.analyze_virtual:
+                        analyzer.extract_classes()
+                        analyzer.extract_virtual_methods()
+                        logging.debug(f"  Extracted classes and virtual methods from {unit.file}")
+
+                    # Merge analyzer's registry into main feature_registry
+                    for macro_info in analyzer.registry._macros:
+                        feature_registry._macros.append(macro_info)
+                    for macro_name, macro_index in analyzer.registry._macro_name_to_index.items():
+                        if macro_index is not None:
+                            feature_registry._macro_name_to_index[macro_name] = macro_index
+                    for pointer_info in analyzer.registry._pointers:
+                        feature_registry._pointers.append(pointer_info)
+                    for pointer_name, pointer_index in analyzer.registry._pointer_name_to_index.items():
+                        if pointer_index is not None:
+                            feature_registry._pointer_name_to_index[pointer_name] = pointer_index
+                    feature_registry._pointer_assignments.extend(analyzer.registry._pointer_assignments)
+                    for class_info in analyzer.registry._classes:
+                        feature_registry._classes.append(class_info)
+                    for class_name, class_index in analyzer.registry._class_name_to_index.items():
+                        if class_index is not None:
+                            feature_registry._class_name_to_index[class_name] = class_index
+                    for virtual_method_info in analyzer.registry._virtual_methods:
+                        feature_registry._virtual_methods.append(virtual_method_info)
+                    for virtual_method_name, virtual_method_index in analyzer.registry._virtual_method_name_to_index.items():
+                        if virtual_method_index is not None:
+                            feature_registry._virtual_method_name_to_index[virtual_method_name] = virtual_method_index
+
+                except Exception as e:
+                    logging.debug(f"Error extracting features from {unit.file}: {e}")
+                    continue
+
+            # Build derived relationships for classes
+            feature_registry.build_derived_relationships()
+
+            logging.info("Feature analysis complete")
+
         # Build call relationships
         logging.info("Building call relationships")
-        call_analyzer: CallAnalyzer = CallAnalyzer(registry)
+        call_analyzer: CallAnalyzer = CallAnalyzer(registry, feature_registry)
         relationship_builder: RelationshipBuilder = RelationshipBuilder(registry, call_analyzer)
         relationships = relationship_builder.build()
 
@@ -303,7 +387,7 @@ def main() -> int:
             logging.info(f"HTML output: {output_paths.get('html')}")
 
         # Step 3: Apply filter if --filter-func is specified (generates separate files)
-        filter_paths: Optional[Dict[str, Path]] = None
+        filtered_output_paths: Optional[Dict[str, Path]] = None
         if args.filter_func:
             logging.info(f"Filtering graph by function: {args.filter_func}")
 
@@ -340,7 +424,7 @@ def main() -> int:
                 logging.info(f"Filtered HTML output: {filter_html_path}")
 
                 # Store filter paths for summary
-                filter_paths = {
+                filtered_output_paths = {
                     'json': filter_json_path,
                     'html': filter_html_path
                 }
@@ -350,7 +434,7 @@ def main() -> int:
                 return 1
 
         # Print output files summary
-        _print_output_summary(args.format, output_paths, filter_paths)
+        _print_output_summary(args.format, output_paths, filtered_output_paths)
 
         logging.info("Analysis complete")
         return 0

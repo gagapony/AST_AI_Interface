@@ -9,7 +9,7 @@ from .function_extractor import FunctionInfo
 class FunctionRegistry:
     """Index and lookup functions by various keys."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize empty registry."""
         self._functions: List[FunctionInfo] = []
         self._qualified_name_to_indices: Dict[str, List[int]] = {}

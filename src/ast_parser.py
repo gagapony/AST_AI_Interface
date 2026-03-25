@@ -1,7 +1,13 @@
 """AST parsing using libclang."""
 
 import logging
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:
+    try:
+        import clang.cindex  # type: ignore
+    except ImportError:
+        pass
 
 try:
     import clang.cindex
@@ -47,7 +53,7 @@ class ASTParser:
             self._index = None
             logging.error("Cannot create AST parser: libclang not available")
 
-    def parse_file(self, file_path: str) -> Optional:
+    def parse_file(self, file_path: str) -> Optional['clang.cindex.TranslationUnit']:
         """
         Parse a source file and return TranslationUnit.
 
@@ -65,7 +71,7 @@ class ASTParser:
 
         return self._parse_direct(file_path)
 
-    def _parse_direct(self, file_path: str) -> Optional:
+    def _parse_direct(self, file_path: str) -> Optional['clang.cindex.TranslationUnit']:
         """
         Parse file directly with flags.
 
@@ -81,8 +87,9 @@ class ASTParser:
         try:
             # Parse options - optimized for speed
             # PARSE_INCOMPLETE: Allow parsing to succeed even with errors (faster)
-            # Use minimal options to reduce overhead
-            parse_options = clang.cindex.TranslationUnit.PARSE_INCOMPLETE
+            # PARSE_DETAILED_PROCESSING_RECORD: Include preprocessing information (needed for macro extraction)
+            parse_options = (clang.cindex.TranslationUnit.PARSE_INCOMPLETE |
+                           clang.cindex.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD)
 
             # Parse file
             tu = self._index.parse(
@@ -113,14 +120,14 @@ class ASTParser:
             logging.error(f"Failed to parse {file_path}: {e}")
             return None
 
-    def _collect_diagnostics(self, tu) -> None:
+    def _collect_diagnostics(self, tu: 'clang.cindex.TranslationUnit') -> None:
         """Collect diagnostic messages from translation unit."""
         if not CLANG_AVAILABLE:
             return
         for diag in tu.diagnostics:
             self._diagnostics.append(self._format_diagnostic(diag))
 
-    def _format_diagnostic(self, diag) -> str:
+    def _format_diagnostic(self, diag: 'clang.cindex.Diagnostic') -> str:
         """Format diagnostic message."""
         if not CLANG_AVAILABLE:
             return f"Unknown diagnostic: {diag}"

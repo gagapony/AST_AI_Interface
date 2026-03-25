@@ -1,7 +1,7 @@
 """Graph filtering functionality for function call graphs."""
 
 import logging
-from typing import Dict, List, Optional, Set, Tuple, Any
+from typing import Dict, List, Optional, Set, Tuple, Any, Union
 from collections import deque
 
 
@@ -31,6 +31,25 @@ class GraphFilter:
         # Build adjacency map for fast traversal
         self.adjacency: Dict[int, Tuple[List[int], List[int]]] = self._build_adjacency_map()
         self.logger: logging.Logger = logging.getLogger(__name__)
+
+    @staticmethod
+    def _get_index(entry: Union[int, Dict[str, Any]]) -> Optional[int]:
+        """
+        Extract index from a mixed entry type (int or dict).
+
+        Args:
+            entry: Either an int (direct index) or dict (with 'index' key)
+
+        Returns:
+            Index as int, or None if entry is a dict without 'index' key
+        """
+        if isinstance(entry, int):
+            return entry
+        if isinstance(entry, dict) and 'index' in entry:
+            idx: Any = entry['index']
+            if isinstance(idx, int):
+                return idx
+        return None
 
     def filter_by_function(self, target_name: str) -> List[Dict[str, Any]]:
         """
@@ -153,9 +172,13 @@ class GraphFilter:
             parents: List[int] = self.adjacency.get(current, ([], []))[0]
 
             for parent in parents:
-                if parent not in nodes:
-                    nodes.add(parent)
-                    queue.append(parent)
+                parent_idx = self._get_index(parent)
+                if parent_idx is None:
+                    continue
+
+                if parent_idx not in nodes:
+                    nodes.add(parent_idx)
+                    queue.append(parent_idx)
 
         return nodes
 
@@ -179,9 +202,13 @@ class GraphFilter:
             children: List[int] = self.adjacency.get(current, ([], []))[1]
 
             for child in children:
-                if child not in nodes:
-                    nodes.add(child)
-                    queue.append(child)
+                child_idx = self._get_index(child)
+                if child_idx is None:
+                    continue
+
+                if child_idx not in nodes:
+                    nodes.add(child_idx)
+                    queue.append(child_idx)
 
         return nodes
 
@@ -212,8 +239,8 @@ class GraphFilter:
             new_func: Dict[str, Any] = {
                 'index': index_mapping[old_idx],
                 'self': func['self'],
-                'parents': [index_mapping[p] for p in func['parents'] if p in keep_indices],
-                'children': [index_mapping[c] for c in func['children'] if c in keep_indices]
+                'parents': [index_mapping[parent_idx] for p in func['parents'] if (parent_idx := self._get_index(p)) is not None and parent_idx in keep_indices],
+                'children': [index_mapping[child_idx] for c in func['children'] if (child_idx := self._get_index(c)) is not None and child_idx in keep_indices]
             }
 
             filtered.append(new_func)

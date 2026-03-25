@@ -2,19 +2,9 @@
 
 import json
 import sys
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .function_extractor import FunctionInfo
-
-
-@dataclass
-class FunctionOutput:
-    """Output format for a single function."""
-    index: int
-    self: Dict[str, Any]
-    parents: List[int]
-    children: List[int]
 
 
 class JSONEmitter:
@@ -24,10 +14,20 @@ class JSONEmitter:
         """Initialize emitter with optional output file path."""
         self._output_file = output_file
 
+    def _serialize_relationships(self, rels: List[Union[int, Dict[str, Any]]]) -> List[Union[int, Dict[str, Any]]]:
+        """Serialize relationship entries, preserving type markers."""
+        serialized: List[Union[int, Dict[str, Any]]] = []
+        for rel in rels:
+            if isinstance(rel, dict):
+                serialized.append(dict(rel))  # Copy to ensure serializable
+            else:
+                serialized.append(rel)
+        return serialized
+
     def emit(
         self,
         functions: List[FunctionInfo],
-        relationships: Dict[int, Tuple[List[int], List[int]]]
+        relationships: Dict[int, Tuple[List[Union[int, Dict[str, Any]]], List[Union[int, Dict[str, Any]]]]]
     ) -> None:
         """
         Emit JSON output to file or stdout.
@@ -62,21 +62,21 @@ class JSONEmitter:
                 "brief": func.brief
             }
 
-            # Create output entry
-            output_entry = FunctionOutput(
-                index=func_index,
-                self=self_data,
-                parents=parents,
-                children=children
-            )
+            # Create output entry using dict literal
+            output_entry = {
+                "index": func_index,
+                "self": self_data,
+                "parents": self._serialize_relationships(parents),
+                "children": self._serialize_relationships(children)
+            }
 
-            output_data.append(asdict(output_entry))
+            output_data.append(output_entry)
 
         # Write output
         json_output = json.dumps(output_data, indent=2, ensure_ascii=False)
 
         if self._output_file:
-            with open(self._output_file, 'w', encoding='utf-8') as f:
-                f.write(json_output)
+            with open(self._output_file, 'w', encoding='utf-8') as output_file_handle:
+                output_file_handle.write(json_output)
         else:
             print(json_output)

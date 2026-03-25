@@ -4,12 +4,15 @@ import json
 import logging
 import shlex
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-try:
+if TYPE_CHECKING:
     from .compilation_db import CompilationUnit
-except ImportError:
-    from compilation_db import CompilationUnit
+else:
+    try:
+        from .compilation_db import CompilationUnit  # type: ignore
+    except ImportError:
+        from compilation_db import CompilationUnit  # type: ignore
 
 
 class CompileCommandsSimplifier:
@@ -61,7 +64,7 @@ class CompileCommandsSimplifier:
         self.logger.debug(f"Resolved filter paths: {resolved}")
         return resolved
 
-    def simplify_units(self, units: List[CompilationUnit]) -> Tuple[List[CompilationUnit], Dict]:
+    def simplify_units(self, units: List[CompilationUnit]) -> Tuple[List[CompilationUnit], Dict[str, int]]:
         """
         Simplify compilation units by filtering flags.
 
@@ -80,7 +83,7 @@ class CompileCommandsSimplifier:
         Returns:
             Tuple of (simplified_units, stats_dict)
         """
-        stats = {
+        stats: Dict[str, int] = {
             'original_units': len(units),
             'kept_units': 0,
             'removed_units': 0,
@@ -158,9 +161,9 @@ class CompileCommandsSimplifier:
         self.logger.debug(f"No match for path: {abs_path_str} against filters: {self.resolved_filter_paths}")
         return False
 
-    def _filter_flags(self, flags: List[str]) -> Tuple[List[str], Dict]:
+    def _filter_flags(self, flags: List[str]) -> Tuple[List[str], Dict[str, int]]:
         """Filter flags, keeping only -D and matching -I."""
-        stats = {
+        stats: Dict[str, int] = {
             'kept_D_flags': 0,
             'kept_I_flags': 0,
             'removed_I_flags': 0,

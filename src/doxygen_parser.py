@@ -8,7 +8,7 @@ from typing import Optional
 class DoxygenParser:
     """Parse Doxygen comments to extract @brief."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize parser."""
         # Multi-pattern regex for @brief and \brief
         # Updated to properly capture multi-line briefs

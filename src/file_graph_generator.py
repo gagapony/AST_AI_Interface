@@ -492,7 +492,15 @@ function setupEventListeners() {
             children: List[int]
             parents, children = self.relationships.get(func_idx, ([], []))
 
-            for child_idx in children:
+            for child in children:
+                # Skip non-index entries (e.g., macro calls)
+                if isinstance(child, dict):
+                    if 'index' not in child:
+                        continue
+                    child_idx: int = child['index']
+                else:
+                    child_idx = child
+
                 if child_idx in func_index_to_file:
                     target_file: str = func_index_to_file[child_idx]
 

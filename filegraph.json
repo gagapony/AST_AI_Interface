@@ -1,0 +1,38 @@
+[
+  {
+    "index": 0,
+    "self": {
+      "path": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_macros.cpp",
+      "line": [
+        4,
+        6
+      ],
+      "type": "function",
+      "name": "calculate",
+      "qualified_name": "calculate::(int, int)",
+      "brief": null
+    },
+    "parents": [
+      1
+    ],
+    "children": []
+  },
+  {
+    "index": 1,
+    "self": {
+      "path": "/home/gabriel/.openclaw/code/clang-call-analyzer/test_macros.cpp",
+      "line": [
+        8,
+        10
+      ],
+      "type": "function",
+      "name": "main",
+      "qualified_name": "main",
+      "brief": null
+    },
+    "parents": [],
+    "children": [
+      0
+    ]
+  }
+]

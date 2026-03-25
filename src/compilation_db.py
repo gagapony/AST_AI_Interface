@@ -50,7 +50,7 @@ class CompilationDatabase:
             logging.error(f"Failed to load compile_commands.json: {e}")
             raise
 
-    def _parse_entry(self, entry: dict) -> Optional[CompilationUnit]:
+    def _parse_entry(self, entry: dict[str, object]) -> Optional[CompilationUnit]:
         """Parse a single compile_commands.json entry.
 
         Args:
@@ -59,8 +59,10 @@ class CompilationDatabase:
         Returns:
             CompilationUnit if successful, None if entry should be skipped
         """
-        directory = entry.get('directory', '')
-        raw_file_path = entry.get('file', '')
+        directory_value = entry.get('directory', '')
+        directory = directory_value if isinstance(directory_value, str) else ''
+        raw_file_path_value = entry.get('file', '')
+        raw_file_path = raw_file_path_value if isinstance(raw_file_path_value, str) else ''
 
         if not raw_file_path:
             raise ValueError("Missing 'file' field in compilation database entry")
@@ -77,7 +79,8 @@ class CompilationDatabase:
 
         # Handle both 'arguments' and 'command' fields
         arguments = entry.get('arguments')
-        command = entry.get('command', '')
+        command_value = entry.get('command', '')
+        command = command_value if isinstance(command_value, str) else ''
 
         if arguments is not None:
             # arguments has priority over command
